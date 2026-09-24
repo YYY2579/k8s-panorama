@@ -1,0 +1,31 @@
+name: k8s-panorama
+
+services:
+  atlas:
+    build:
+      context: ..            # 项目根目录
+      dockerfile: deploy/Dockerfile
+    image: k8s-panorama:1.0.0
+    container_name: k8s-panorama
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ATLAS_HOST: "0.0.0.0"
+      ATLAS_PORT: "8000"
+      # 首次启动灌种子数据；已存在的库不会重复灌入
+      ATLAS_SEED: "1"
+      # 若需放行独立前端调试端口：http://127.0.0.1:5173
+      ATLAS_CORS: "http://127.0.0.1:5173,http://localhost:5173"
+    volumes:
+      - atlas-data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  atlas-data:
+    name: k8s-panorama-data

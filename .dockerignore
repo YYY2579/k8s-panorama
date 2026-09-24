@@ -1,0 +1,27 @@
+# 构建上下文排除项（位于项目根，与 docker-compose 的 context: .. 对应）
+.git
+.gitignore
+.workbuddy/
+deploy/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# 运行时数据：不进镜像，由命名卷 / 绑定目录提供
+backend/data/*.db
+backend/data/*.db-journal
+backend/data/*.db-wal
+backend/data/*.db-shm
+
+# 导出文件
+export.json
+*-export.json
+
+# 本机临时
+.tmpprofile/
+.DS_Store
+Thumbs.db

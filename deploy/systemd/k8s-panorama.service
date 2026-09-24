@@ -1,0 +1,34 @@
+[Unit]
+Description=K8s Panorama - Kubernetes Panorama Knowledge Graph
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas
+Group=atlas
+WorkingDirectory=/opt/k8s-panorama/backend
+
+# 配置（均可用环境变量覆盖）
+Environment=ATLAS_HOST=0.0.0.0
+Environment=ATLAS_PORT=8000
+Environment=ATLAS_SEED=1
+# 若前端用独立静态服务调试，放行其来源：
+# Environment=ATLAS_CORS=http://127.0.0.1:5173,http://localhost:5173
+
+ExecStart=/opt/k8s-panorama/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/k8s-panorama/backend/data
+
+[Install]
+WantedBy=multi-user.target

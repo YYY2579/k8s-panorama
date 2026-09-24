@@ -1,0 +1,60 @@
+# K8s Panorama 端到端接口测试输出
+# 生成方式：python scripts/test_api.py
+# 该文件由开发流程自动归档，可随时重新生成替换
+
+== K8s Panorama 端到端测试 ==  http://127.0.0.1:8000/api
+
+PASS  健康检查返回 200   {'status': 'ok', 'database': 'sqlite', 'counts': {'layers': 8, 'groups': 8, 'nodes': 41, 'fields': 41, 'edges': 42, 'notes': 3, 'sops': 2, 'sop_steps': 8, 'yamls': 2, 'audit': 113}}
+PASS  图谱聚合返回 200
+PASS  图层 8 个   实际 8
+PASS  分组 8 个   实际 8
+PASS  组件 41 个   实际 41
+PASS  关系 42 条   实际 42
+PASS  组件带关键字段
+PASS  POST 组件 返回 201   201
+PASS  POST 组件 内容一致
+PASS  GET 组件详情
+PASS  组件字段落库
+PASS  PATCH 组件
+PASS  PATCH 覆盖字段
+PASS  POST 关系   201
+PASS  GET 关系详情
+PASS  PATCH 关系
+PASS  搜索命中组件   命中 1
+PASS  搜索命中新建组件
+PASS  中文搜索不报错
+PASS  POST 分组   201
+PASS  PATCH 分组
+PASS  DELETE 分组(force)   {'deleted': 1, 'id': 'zz-test-group', 'moved_nodes': 0}
+PASS  POST 知识条目   201
+PASS  知识条目初始状态 draft
+PASS  流转 publish: draft→review   review
+PASS  流转 approve: review→published   published
+PASS  非法流转被拒（published 不能 publish）   返回 400
+PASS  流转 archive
+PASS  流转 restore: archived→draft
+PASS  DELETE 知识条目
+PASS  POST 排障 SOP   201
+PASS  SOP 步骤落库
+PASS  SOP 流转 publish
+PASS  SOP 流转 approve
+PASS  DELETE 排障 SOP
+PASS  POST YAML   201
+PASS  PATCH YAML
+PASS  DELETE YAML
+PASS  审计日志返回 200
+PASS  审计含 create
+PASS  审计含 update
+PASS  审计含 delete
+PASS  审计含 transition
+PASS  审计含 import 或 seed
+PASS  导出全库   导出节点 42
+PASS  导出含知识/SOP/YAML
+PASS  导入(merge) 回灌自身   {'layers': 8, 'groups': 8, 'nodes': 42, 'edges': 43, 'notes': 3, 'sops': 2, 'yamls': 2}
+PASS  清理：删除测试组件
+PASS  清理后组件数回到 41   实际 41
+PASS  清理后关系数回到 42   实际 42
+
+============================================================
+PASS 50   FAIL 0
+============================================================
