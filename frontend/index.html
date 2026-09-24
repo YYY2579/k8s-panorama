@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubernetes 全景架构 · K8s Panorama</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <button class="railbtn" id="bSide" title="切换导航栏" aria-label="切换导航栏">☰</button>
+    <div class="brand" id="brand" title="刷新数据"><b>Kubernetes</b> <span>全景架构</span></div>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="搜索组件、知识、排障…（回车定位，Ctrl+K 聚焦）" autocomplete="off">
+      <span class="search-hint" id="qhint"></span>
+    </div>
+    <div class="tools">
+      <button class="btn primary" id="bNew">+ 新建组件</button>
+      <button class="btn" id="bFit">适配</button>
+      <button class="btn" id="bRead">阅读</button>
+      <button class="btn on" id="bLink">链路</button>
+      <button class="btn" id="bAnim">动画</button>
+      <button class="btn" id="bExport" title="导出全库 JSON">导出</button>
+      <button class="btn mono" id="bK">Ctrl+K</button>
+      <button class="railbtn" id="bInsp" title="切换详情面板" aria-label="切换详情面板">▤</button>
+    </div>
+  </header>
+
+  <nav class="ptabs" id="ptabs" role="tablist"></nav>
+
+  <div class="wb">
+    <aside class="side" id="side">
+      <div class="stabs" id="stabs"></div>
+      <div class="gtitle">视图</div>
+      <div class="vlist" id="vlist"></div>
+      <div class="gtitle">图层</div>
+      <div class="cklist" id="cklist"></div>
+      <div class="gtitle">核心对象</div>
+      <div class="olist" id="olist"></div>
+    </aside>
+
+    <section class="cv" id="cv">
+      <!-- 全景架构 -->
+      <div class="canvasview" id="canvasView">
+        <div class="legend" id="legend"></div>
+        <div class="zoomctl">
+          <button class="zbtn" id="zIn" title="放大">+</button>
+          <button class="zbtn" id="zOut" title="缩小">−</button>
+          <button class="zbtn" id="zFit" title="适配全图">
+            <svg viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 011-1h4M20 9V5a1 1 0 00-1-1h-4M4 15v4a1 1 0 001 1h4M20 15v4a1 1 0 01-1 1h-4"/></svg>
+          </button>
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="stage" id="stage" data-lod="full">
+            <div class="glayer" id="glayer"></div>
+            <svg class="elayer" id="elayer"></svg>
+            <div class="nlayer" id="nlayer"></div>
+          </div>
+        </div>
+        <div class="empty" id="empty"><div id="emptyTx"></div></div>
+        <div class="status" id="status">加载中…</div>
+        <div class="zoominfo" id="zoominfo">100%</div>
+      </div>
+
+      <!-- 其余页签共用的内容面板 -->
+      <div class="panelview" id="panelView" hidden></div>
+    </section>
+
+    <aside class="insp" id="insp" aria-live="polite">
+      <div class="ph">点击画布中的组件查看详情</div>
+    </aside>
+  </div>
+</div>
+
+<!-- 通用弹窗（新增 / 编辑 / 确认） -->
+<div class="modal" id="modal" hidden>
+  <div class="modalbox">
+    <div class="modalhead">
+      <h3 id="modalTitle"></h3>
+      <button class="x" id="modalClose" aria-label="关闭">×</button>
+    </div>
+    <div class="modalbody" id="modalBody"></div>
+    <div class="modalfoot" id="modalFoot"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
