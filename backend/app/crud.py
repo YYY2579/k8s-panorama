@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,16 +26,45 @@ def _utcnow():
 
 
 # ------------------------------------------------------------------ 审计
-def audit(db: Session, action: str, entity: str, entity_id: str, detail: str = "") -> models.AuditLog:
-    row = models.AuditLog(action=action, entity=entity, entity_id=str(entity_id), detail=detail)
+# 当前操作者。由路由层在函数体内调用 set_actor() 设置。
+# 注意：不能用 FastAPI 的 generator 依赖来设置 —— 同步依赖的 __enter__ 与路由函数体
+# 分别在两次 to_thread 调用里执行，ContextVar 的修改不会跨调用传递（实测 actor 全是 anonymous）。
+current_actor: ContextVar[str] = ContextVar("atlas_current_actor", default="anonymous")
+
+
+def set_actor(name: str) -> None:
+    """记录本次请求的操作者。必须在路由函数体第一行调用（与 audit 同一次线程执行）。"""
+    current_actor.set(name)
+
+
+def audit(
+    db: Session,
+    action: str,
+    entity: str,
+    entity_id: str,
+    detail: str = "",
+    actor: str | None = None,
+) -> models.AuditLog:
+    """写审计日志。actor 不传则取 current_actor（路由层已设置）。"""
+    who = actor if actor is not None else current_actor.get()
+    row = models.AuditLog(
+        action=action, entity=entity, entity_id=str(entity_id), detail=detail, actor=who
+    )
     db.add(row)
     return row
 
 
-def list_audit(db: Session, limit: int = 50, entity: str | None = None) -> list[models.AuditLog]:
+def list_audit(
+    db: Session,
+    limit: int = 50,
+    entity: str | None = None,
+    actor: str | None = None,
+) -> list[models.AuditLog]:
     stmt = select(models.AuditLog).order_by(models.AuditLog.id.desc()).limit(limit)
     if entity:
         stmt = stmt.where(models.AuditLog.entity == entity)
+    if actor:
+        stmt = stmt.where(models.AuditLog.actor == actor)
     return list(db.scalars(stmt).all())
 
 

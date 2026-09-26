@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session
 
 from .. import crud
 from ..db import get_db
+from ..deps import require_admin
+from ..models import User
+from ..deps import require_admin
 from ..schemas import ImportPayload
 
 router = APIRouter(prefix="/io", tags=["导入导出"])
@@ -20,8 +23,10 @@ def import_data(
     payload: ImportPayload,
     mode: str = Query("merge", pattern="^(merge|replace)$"),
     db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
     """结构不合法的 JSON 会被 Pydantic 拦成 422，不会进入写库环节。"""
+    crud.set_actor(admin.username)
     return {
         "mode": mode,
         "imported": crud.import_all(db, payload.model_dump(), mode),

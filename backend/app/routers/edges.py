@@ -4,6 +4,9 @@ from sqlalchemy.orm import Session
 
 from .. import crud, schemas
 from ..db import get_db
+from ..deps import require_admin
+from ..models import User
+from ..deps import require_admin
 
 router = APIRouter(prefix="/edges", tags=["关系"])
 
@@ -14,7 +17,9 @@ def list_edges(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.EdgeOut, status_code=201, summary="新建关系")
-def create_edge(payload: schemas.EdgeIn, db: Session = Depends(get_db)):
+def create_edge(payload: schemas.EdgeIn, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.create_edge(db, payload.model_dump())
 
 
@@ -24,7 +29,9 @@ def get_edge(edge_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{edge_id}", response_model=schemas.EdgeOut, summary="修改关系")
-def update_edge(edge_id: str, payload: schemas.EdgePatch, db: Session = Depends(get_db)):
+def update_edge(edge_id: str, payload: schemas.EdgePatch, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise ValueError("没有需要更新的字段")
@@ -32,5 +39,7 @@ def update_edge(edge_id: str, payload: schemas.EdgePatch, db: Session = Depends(
 
 
 @router.delete("/{edge_id}", summary="删除关系")
-def delete_edge(edge_id: str, db: Session = Depends(get_db)):
+def delete_edge(edge_id: str, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.delete_edge(db, edge_id)

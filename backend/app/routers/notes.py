@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from .. import crud, schemas
 from ..db import get_db
+from ..deps import require_admin
+from ..models import User
+from ..deps import require_admin
 
 router = APIRouter(prefix="/notes", tags=["知识条目"])
 
@@ -18,7 +21,9 @@ def list_notes(status: str | None = None, node_id: str | None = None, db: Sessio
 
 
 @router.post("", response_model=schemas.NoteOut, status_code=201, summary="新建知识条目")
-def create_note(payload: schemas.NoteIn, db: Session = Depends(get_db)):
+def create_note(payload: schemas.NoteIn, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.create_note(db, payload.model_dump())
 
 
@@ -28,7 +33,9 @@ def get_note(slug: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{slug}", response_model=schemas.NoteOut, summary="修改知识条目")
-def update_note(slug: str, payload: schemas.NotePatch, db: Session = Depends(get_db)):
+def update_note(slug: str, payload: schemas.NotePatch, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise ValueError("没有需要更新的字段")
@@ -36,10 +43,14 @@ def update_note(slug: str, payload: schemas.NotePatch, db: Session = Depends(get
 
 
 @router.delete("/{slug}", summary="删除知识条目")
-def delete_note(slug: str, db: Session = Depends(get_db)):
+def delete_note(slug: str, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.delete_note(db, slug)
 
 
 @router.post("/{slug}/transition", response_model=schemas.NoteOut, summary="状态流转")
-def transition(slug: str, payload: schemas.TransitionIn, db: Session = Depends(get_db)):
+def transition(slug: str, payload: schemas.TransitionIn, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.transition_note(db, slug, payload.action, payload.comment)

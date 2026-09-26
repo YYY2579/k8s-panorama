@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import http.cookiejar
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -14,6 +16,10 @@ import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
 API = BASE + "/api"
+
+# 写接口需要 admin：用 CookieJar 自动保留会话 cookie
+JAR = http.cookiejar.CookieJar()
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(JAR))
 
 PASS, FAIL = [], []
 
@@ -30,7 +36,7 @@ def req(method: str, path: str, body: dict | None = None):
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(r, timeout=15) as resp:
+        with OPENER.open(r, timeout=15) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as e:
@@ -65,9 +71,6 @@ def cleanup_leftovers() -> None:
 def main() -> int:
     print(f"== K8s Panorama 端到端测试 ==  {API}\n")
 
-    # ---------- 0 清理上轮残留（服务没起时返回 0，不抛异常） ----------
-    cleanup_leftovers()
-
     # ---------- 1 健康检查 ----------
     st, d = req("GET", "/health")
     if st == 0:
@@ -79,6 +82,18 @@ def main() -> int:
         print("后端未就绪，后续测试无法进行。")
         return 1
     base_counts = (d or {}).get("counts", {})
+
+    # ---------- 1.5 登录（写接口需要 admin） ----------
+    password = os.getenv("ATLAS_ADMIN_PASSWORD") or "atlas-test-password"
+    lst, ldata = req("POST", "/auth/login", {"username": "admin", "password": password})
+    if lst != 200:
+        print(f"登录失败（{lst}）：{lda if (lda := str(ldata)) else ''}")
+        print("请设置环境变量 ATLAS_ADMIN_PASSWORD 为后端 admin 口令后重试")
+        return 1
+    check("管理员登录成功", lst == 200)
+
+    # ---------- 1.6 清理上轮残留（此时已登录，DELETE 有权限） ----------
+    cleanup_leftovers()
 
     # ---------- 2 图谱聚合 ----------
     st, g = req("GET", "/atlas/graph")

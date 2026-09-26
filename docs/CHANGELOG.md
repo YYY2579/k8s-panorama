@@ -2,6 +2,120 @@
 
 ---
 
+## [1.1.0] — 2026-09-26
+
+对应路线图 M1「可信」：鉴权与权限、CI 与单元测试、数据库迁移。**纯增量，未改动既有业务逻辑。**
+
+### 新增
+
+**M1a 鉴权与权限**
+
+- `user` 表：用户名、口令哈希、角色（`admin` / `viewer`）、启用状态、最近登录时间
+- 口令哈希：标准库 `hashlib.pbkdf2_hmac`（SHA-256 / 26 万次迭代 / 128 位随机盐），
+  格式自带算法与参数，常量时间比较；未引入 passlib/bcrypt，避免平台编译依赖
+- 会话：`itsdangerous` 签名 cookie（HttpOnly + SameSite=Lax），payload 只有 uid 与 role，
+  另按 payload 内的 `iat` 做二次过期校验
+- 依赖：`current_user`（401）、`require_admin`（403）、`crud.set_actor()`（记录操作者）
+- 22 个写接口全部要求 admin；读接口保持公开
+- 审计日志新增 `actor` 字段，支持按实体 / 操作者过滤
+- 首启引导：无用户时创建管理员。口令取 `ATLAS_ADMIN_PASSWORD`，未设置则随机生成并只打印一次
+- 前端：独立登录页 `/login.html`、顶栏登录态芯片、未登录隐藏写入口、401/403 友好提示
+- 自我保护：不能降级、停用或删除当前登录的自己
+
+**M1b 测试与 CI**
+
+- `backend/tests/`：73 个 pytest 用例（口令哈希、会话签名与篡改检测、角色拦截、
+  CRUD、状态流转、导入导出事务回滚）
+- `.github/workflows/ci.yml`：安装依赖 → pytest → 启动后端 → 端到端测试
+- `scripts/test_api.py` 适配鉴权：用 CookieJar 自动带会话，运行前需设置 `ATLAS_ADMIN_PASSWORD`
+
+**M1c 数据库迁移**
+
+- Alembic 接入，初始迁移 `d616d19e93cb` 建 11 张业务表
+- 服务启动走 `upgrade head`，取代 `create_all`
+- `ensure_migration_state()`：识别"迁移上线前的旧库"并 `stamp head`，避免重复建表
+- `scripts/reset_db.py` 改为「drop_all → upgrade head → 灌种子」
+
+### 验收证据
+
+| 测试 | 结果 |
+|---|---|
+| `pytest backend/tests` | **73 passed / 0 failed** |
+| `scripts/test_api.py` | **51 PASS / 0 FAIL** |
+| 前端未登录态注入测试 | **7 PASS / 0 FAIL** |
+| 前端 admin 闭环注入测试 | **12 PASS / 0 FAIL** |
+
+前端闭环覆盖：登录 → 写按钮出现 → 建组件 → 改 → 删 → 404 → 审计 3 条且 actor 均为 admin。
+
+### 开发中修掉的问题
+
+| 问题 | 根因 |
+|---|---|
+| 所有写接口 500 | `deps.py` 里 `from .. import crud` 超出顶级包，改为 `from . import crud` |
+| 审计 actor 全是 anonymous | ContextVar 无法跨 FastAPI 的同步依赖与路由函数体传递；改为在路由函数体内调 `crud.set_actor()` |
+| `/api/audit` 500 | 模型加了 `actor` 列但旧表没有，`create_all` 不补列；先加 `ensure_schema()` 兜底，最终由 Alembic 取代 |
+| `/api/audit?actor=` 过滤无效 | `crud.list_audit` 加了参数但路由没暴露 |
+| 37 个 pytest 失败 | 某个测试执行登出，把 session 级共享 client 的 cookie 清掉；fixture 改 function 作用域 |
+
+---
+
+## [1.1.0] — 2026-09-26
+
+对应路线图 M1「可信」：鉴权与权限、CI 与单元测试、数据库迁移。**纯增量，未改动既有业务逻辑。**
+
+### 新增
+
+**M1a 鉴权与权限**
+
+- `user` 表：用户名、口令哈希、角色（`admin` / `viewer`）、启用状态、最近登录时间
+- 口令哈希：标准库 `hashlib.pbkdf2_hmac`（SHA-256 / 26 万次迭代 / 128 位随机盐），
+  格式自带算法与参数，常量时间比较；未引入 passlib/bcrypt，避免平台编译依赖
+- 会话：`itsdangerous` 签名 cookie（HttpOnly + SameSite=Lax），payload 只有 uid 与 role，
+  另按 payload 内的 `iat` 做二次过期校验
+- 依赖：`current_user`（401）、`require_admin`（403）、`crud.set_actor()`（记录操作者）
+- 22 个写接口全部要求 admin；读接口保持公开
+- 审计日志新增 `actor` 字段，支持按实体 / 操作者过滤
+- 首启引导：无用户时创建管理员。口令取 `ATLAS_ADMIN_PASSWORD`，未设置则随机生成并只打印一次
+- 前端：独立登录页 `/login.html`、顶栏登录态芯片、未登录隐藏写入口、401/403 友好提示
+- 自我保护：不能降级、停用或删除当前登录的自己
+
+**M1b 测试与 CI**
+
+- `backend/tests/`：73 个 pytest 用例（口令哈希、会话签名与篡改检测、角色拦截、
+  CRUD、状态流转、导入导出事务回滚）
+- `.github/workflows/ci.yml`：安装依赖 → pytest → 启动后端 → 端到端测试
+- `scripts/test_api.py` 适配鉴权：用 CookieJar 自动带会话，运行前需设置 `ATLAS_ADMIN_PASSWORD`
+
+**M1c 数据库迁移**
+
+- Alembic 接入，初始迁移 `d616d19e93cb` 建 11 张业务表
+- 服务启动走 `upgrade head`，取代 `create_all`
+- `ensure_migration_state()`：识别"迁移上线前的旧库"并 `stamp head`，避免重复建表
+- `scripts/reset_db.py` 改为「drop_all → upgrade head → 灌种子」
+
+### 验收证据
+
+| 测试 | 结果 |
+|---|---|
+| `pytest backend/tests` | **73 passed / 0 failed** |
+| `scripts/test_api.py` | **51 PASS / 0 FAIL** |
+| 前端未登录态注入测试 | **7 PASS / 0 FAIL** |
+| 前端 admin 闭环注入测试 | **12 PASS / 0 FAIL** |
+
+前端闭环覆盖：登录 → 写按钮出现 → 建组件 → 改 → 删 → 404 → 审计 3 条且 actor 均为 admin。
+
+### 开发中修掉的问题
+
+| 问题 | 根因 |
+|---|---|
+| 所有写接口 500 | `deps.py` 里 `from .. import crud` 超出顶级包，改为 `from . import crud` |
+| 审计 actor 全是 anonymous | ContextVar 无法跨 FastAPI 的同步依赖与路由函数体传递；改为在路由函数体内调 `crud.set_actor()` |
+| `/api/audit` 500 | 模型加了 `actor` 列但旧表没有，`create_all` 不补列；先加 `ensure_schema()` 兜底，最终由 Alembic 取代 |
+| `/api/audit?actor=` 过滤无效 | `crud.list_audit` 加了参数但路由没暴露 |
+| 37 个 pytest 失败 | 某个测试执行登出，把 session 级共享 client 的 cookie 清掉；fixture 改 function 作用域 |
+
+---
+
 ## [1.0.1] — 2026-09-26
 
 依据 [`audits/code-review-2026-09-26.md`](audits/code-review-2026-09-26.md) 的 15 项发现全面修复。

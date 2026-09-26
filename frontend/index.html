@@ -18,12 +18,15 @@
       <span class="search-hint" id="qhint"></span>
     </div>
     <div class="tools">
-      <button class="btn primary" id="bNew">+ 新建组件</button>
+      <span class="hint" id="writeHint" hidden
+            style="font-size:11px;color:#6C839E;letter-spacing:.02em"></span>
+      <button class="btn primary" id="bNew" data-need-write>+ 新建组件</button>
       <button class="btn" id="bFit">适配</button>
       <button class="btn" id="bRead">阅读</button>
       <button class="btn on" id="bLink">链路</button>
       <button class="btn" id="bAnim">动画</button>
       <button class="btn" id="bExport" title="导出全库 JSON">导出</button>
+      <span id="authChip" style="display:inline-flex;gap:7px;align-items:center"></span>
       <button class="btn mono" id="bK">Ctrl+K</button>
       <button class="railbtn" id="bInsp" title="切换详情面板" aria-label="切换详情面板">▤</button>
     </div>

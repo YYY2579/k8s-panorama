@@ -5,6 +5,9 @@
 一个可交互的 K8s 组件关系知识图谱系统：把 41 个核心组件、42 条调用关系按分层组织成一张可缩放的知识图谱，
 并为每个组件附带知识条目、排障 SOP 与验证命令。数据持久化在 SQLite，支持完整的增删改查与状态流转。
 
+[![CI](https://github.com/YYY2579/k8s-panorama/actions/workflows/ci.yml/badge.svg)](https://github.com/YYY2579/k8s-panorama/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+
 - 仓库：<https://github.com/YYY2579/k8s-panorama>
 - 技术栈：FastAPI · SQLAlchemy 2.0 · SQLite · Pydantic v2 · 原生前端（零依赖）
 - 部署：[宿主机](deploy/bare-metal.md) · [Docker](deploy/docker.md)
@@ -25,6 +28,9 @@
 | 链路分析 | 「网络链路」页签基于 BFS 计算两个组件间的真实最短路径 |
 | 审计日志 | 所有写操作自动留痕，可通过接口查询 |
 | 导入导出 | 一键导出全库 JSON，支持 `merge` / `replace` 两种方式回灌 |
+| 登录与权限 | 会话 cookie 登录；`admin` 可写、`viewer` 只读；未登录 401、权限不足 403 |
+| 操作可追溯 | 每次写操作记录操作者（actor），审计日志支持按实体 / 操作者过滤 |
+| 数据库迁移 | Alembic 管理 schema，加字段走"生成迁移 → upgrade"，不再靠删库重建 |
 
 页面上的每一个节点、每一条连线、每一段知识正文都来自数据库；新建 / 编辑 / 删除都会真实写入
 `backend/data/atlas.db` 并在 `audit_log` 表留下记录。
@@ -54,6 +60,18 @@ python run.py
 
 首次启动会自动建库并灌入种子数据（41 个组件 / 42 条关系 / 8 个分组 / 8 个分类 / 3 条知识 / 2 条 SOP / 2 条 YAML）。
 
+**首次登录**：启动时会自动创建管理员账号。
+
+- 口令取自环境变量 `ATLAS_ADMIN_PASSWORD`（推荐，见下方配置表）
+- 未设置时随机生成 16 位口令，**只打印一次**到启动日志，请立即登录后在「用户管理」里改掉
+
+```bash
+# 推荐：显式指定口令
+ATLAS_ADMIN_PASSWORD="your-strong-password" python run.py
+```
+
+读接口（图谱、检索、健康检查）无需登录；写接口需要 `admin`。
+
 ### 访问
 
 | 地址 | 说明 |
@@ -76,6 +94,10 @@ python run.py
 | `ATLAS_CORS` | `http://127.0.0.1:5173,http://localhost:5173,...` | 允许的跨域源，逗号分隔 |
 | `ATLAS_SEED` | `1` | 设为 `0` 则启动时不灌种子数据 |
 | `ATLAS_RELOAD` | `1` | `python run.py` 是否开启自动重载 |
+| `ATLAS_ADMIN_USER` | `admin` | 首启创建的管理员用户名 |
+| `ATLAS_ADMIN_PASSWORD` | 随机生成 | 首启管理员口令；**生产环境必须显式设置** |
+| `ATLAS_SECRET_KEY` | 随机生成 | 会话 cookie 签名密钥；轮转它等于让所有会话失效 |
+| `ATLAS_SESSION_TTL` | `43200`（12 小时） | 会话有效期，秒 |
 
 ```bash
 ATLAS_PORT=9000 python run.py              # bash
@@ -116,8 +138,11 @@ k8s-panorama/
 │   └── nginx/k8s-panorama.conf
 ├── scripts/
 │   ├── test_api.py           端到端接口测试
-│   ├── reset_db.py           重建数据库
+│   ├── reset_db.py           重建数据库（删表 → 迁移 → 灌种子）
 │   └── _gen_seed.py          从图谱数据生成种子文件
+├── backend/migrations/       Alembic 迁移脚本
+├── backend/tests/            pytest 单元测试（73 个用例）
+└── .github/workflows/ci.yml  CI：pytest + 端到端测试
 ├── docs/
 │   ├── DEVELOPMENT.md        开发说明与扩展指南
 │   └── CHANGELOG.md          变更记录与验收证据
@@ -182,9 +207,12 @@ draft ──publish──> review ──approve──> published
 | GET/POST/PATCH/DELETE | `/api/sops[/{symptom}]` | 排障 SOP 增删改查 |
 | POST | `/api/sops/{symptom}/transition` | 状态流转 |
 | GET/POST/PATCH/DELETE | `/api/yamls[/{id}]` | YAML 片段增删改查 |
-| GET | `/api/audit` | 审计日志 |
+| GET | `/api/audit` | 审计日志（支持 `entity` / `actor` 过滤） |
 | GET | `/api/io/export` | 导出全库 JSON |
 | POST | `/api/io/import?mode=` | 导入 JSON（`merge` / `replace`） |
+| POST | `/api/auth/login` · `/api/auth/logout` · `GET /api/auth/me` | 登录 / 登出 / 当前用户 |
+| GET/POST/PATCH/DELETE | `/api/auth/users[/{username}]` | 用户管理（仅 admin） |
+| POST | `/api/auth/password` | 修改自己的口令 |
 
 示例：
 
@@ -208,7 +236,23 @@ python scripts/test_api.py
 
 脚本会真实请求后端，逐条打印 `PASS/FAIL`，覆盖组件 / 关系 / 分组 / 知识条目 / SOP / YAML 的
 完整 CRUD、状态流转（含非法流转拦截）、审计留痕、导出导入，并在结束时清理自身创建的测试数据。
-当前版本 **50 项断言全部通过**，完整输出见 [`docs/acceptance-test-output.txt`](docs/acceptance-test-output.txt)。
+当前版本 **51 项断言全部通过**（含管理员登录），完整输出见 [`docs/acceptance-test-output.txt`](docs/acceptance-test-output.txt)。
+
+> 写接口需要登录，运行前请设置 `ATLAS_ADMIN_PASSWORD` 为后端 admin 口令。
+
+### 单元测试
+
+```bash
+pytest backend/tests -q
+```
+
+73 个用例，覆盖口令哈希、会话签名与篡改检测、角色拦截、CRUD、状态流转、
+导入导出的事务回滚。测试使用独立临时库，不碰 `backend/data/atlas.db`。
+
+### 持续集成
+
+推送或提 PR 时 GitHub Actions 自动执行：安装依赖 → `pytest` → 启动后端 → 端到端测试。
+状态见仓库首页徽章。
 
 浏览器侧的手工验收步骤见 [`tests/manual_steps.md`](tests/manual_steps.md)，其中包含
 "重启后端后数据仍在"的持久化验证。
@@ -236,7 +280,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## 已知限制
 
-1. **无鉴权**。本项目面向个人或内网使用，接口未做登录。暴露到公网前必须在反向代理层加访问控制。
+1. **鉴权较简**。已有登录与 admin/viewer 两级角色，但无密码强度策略、无登录限流、无审计导出。
+   暴露到公网前建议在反向代理层再加访问控制与限流。
 2. **不连接真实 K8s 集群**。界面中的 `kubectl` 命令供复制到本地终端执行，后端不执行任何 shell 命令。
 3. **SQLite 单文件**。并发写入能力有限；需要多写并发时改 `config.DATABASE_URL` 为 PostgreSQL 即可，ORM 层无需改动。
 4. 种子数据中的知识条目、排障 SOP、YAML 片段为示例内容，可在界面上直接编辑替换。

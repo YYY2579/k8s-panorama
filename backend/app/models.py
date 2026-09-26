@@ -167,7 +167,10 @@ class YamlSnippet(Base):
 
 
 class AuditLog(Base):
-    """审计日志：每次写操作（create/update/delete/transition/import）都会写一条。"""
+    """审计日志：每次写操作（create/update/delete/transition/import）都会写一条。
+
+    actor 记录操作者；未登录（理论上不会发生，写操作已要求登录）记为 anonymous。
+    """
 
     __tablename__ = "audit_log"
 
@@ -176,4 +179,19 @@ class AuditLog(Base):
     entity: Mapped[str] = mapped_column(String(30), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    actor: Mapped[str] = mapped_column(String(80), nullable=False, default="anonymous")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+
+
+class User(Base):
+    """登录用户。角色：admin（可写）/ viewer（只读）。"""
+
+    __tablename__ = "user"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    last_login_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)

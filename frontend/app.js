@@ -1,7 +1,8 @@
 /* =====================================================================
    K8s Panorama 前端
    全部数据来自 /api，页面内不存在写死的图谱内容。
-   任何写操作都会真实落库，并在「最近变更」里看到审计记录。
+   任何写操作都会真实落库，并在「最近变更」里看到审计记录（含操作者）。
+   读接口公开；写接口需登录且角色为 admin（见 backend/app/deps.py）。
    ===================================================================== */
 "use strict";
 
@@ -20,7 +21,10 @@ const S = {
   t: { x: 0, y: 0, s: 1 },
   links: true, anim: false,
   offs: {},
+  me: null,             // 当前登录用户 {id, username, role}；未登录为 null
 };
+const canWrite = () => !!S.me && S.me.role === "admin";
+
 
 /* ---------------------------------------------------------------- 工具区 */
 /* 渲染范式约定（对应 docs/DEVELOPMENT.md 第 4 节）：
@@ -44,6 +48,7 @@ async function api(path, opts = {}) {
   const timer = setTimeout(() => ac.abort(), 15000);      // 15s 超时，避免永久挂起
   try {
     const res = await fetch(API + path, {
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       signal: ac.signal,
       ...opts,
@@ -53,16 +58,75 @@ async function api(path, opts = {}) {
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     if (!res.ok) {
       const msg = (data && data.detail) ? JSON.stringify(data.detail) : (text || res.status);
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
     }
     return data;
   } catch (err) {
     if (err && err.name === "AbortError") {
       throw new Error("请求超时（15s），请检查后端是否在运行");
     }
+    if (err && (err.status === 401 || err.status === 403)) {
+      handleAuthError(err);
+    }
     throw err;
   } finally {
     clearTimeout(timer);
+  }
+}
+/* 401/403 统一处理：提示原因并引导去登录（不强制跳转，避免打断浏览） */
+function handleAuthError(err) {
+  const why = err.status === 401 ? "需要登录" : "需要管理员权限";
+  toast(why + "：" + err.message);
+  renderAuthChip();
+}
+/* 拉当前登录用户；未登录时 S.me 置 null */
+async function loadMe() {
+  try {
+    S.me = await api("/auth/me");
+  } catch {
+    S.me = null;
+  }
+  renderAuthChip();
+  applyWritePermissions();
+  return S.me;
+}
+/* 顶栏右侧的登录态芯片：未登录显示「登录」，已登录显示 用户名·角色 + 登出 */
+function renderAuthChip() {
+  const host = $("authChip"); if (!host) return;
+  host.innerHTML = "";
+  if (!S.me) {
+    const a = document.createElement("a");
+    a.className = "btn"; a.href = "/login.html"; a.textContent = "登录";
+    host.appendChild(a);
+    return;
+  }
+  const tag = document.createElement("span");
+  tag.className = "btn mono";
+  tag.style.cursor = "default";
+  tag.textContent = `${S.me.username} · ${S.me.role}`;
+  tag.title = `角色：${S.me.role}${S.me.role === "admin" ? "（可写）" : "（只读）"}`;
+  const out = document.createElement("button");
+  out.className = "btn"; out.textContent = "登出";
+  out.onclick = async () => {
+    try { await api("/auth/logout", { method: "POST" }); } catch { /* 忽略：本地清理即可 */ }
+    S.me = null; renderAuthChip(); applyWritePermissions();
+    toast("已登出");
+    if (S.ptab !== "atlas") { await refreshPanel(); } else { await reloadGraph(); }
+  };
+  host.append(tag, out);
+}
+/* 按权限显示/隐藏写入口（viewer 与未登录看不到新建/编辑/删除） */
+function applyWritePermissions() {
+  const ok = canWrite();
+  document.querySelectorAll("[data-need-write]").forEach(el => {
+    el.style.display = ok ? "" : "none";
+  });
+  const chip = $("writeHint");
+  if (chip) {
+    chip.textContent = ok ? "" : (S.me ? "当前为只读账号，写操作已隐藏" : "未登录，写操作已隐藏");
+    chip.hidden = ok;
   }
 }
 const nodeById = id => (S.graph ? S.graph.nodes.find(n => n.id === id) : null);
@@ -80,6 +144,7 @@ async function boot() {
     return;
   }
   S.graph.layers.forEach(l => (S.layerOn[l.id] = true));
+  await loadMe();                       // 登录态优先拉取，决定写入口是否可见
   buildTabs(); buildSide(); buildLegend(); buildCanvas();
   bindGlobal(); bindCanvas();
   fit();
@@ -400,10 +465,13 @@ async function renderInspector(id) {
 
   const acts = document.createElement("div"); acts.className = "acts";
   const bEdit = document.createElement("button"); bEdit.className = "btn"; bEdit.textContent = "编辑";
+  bEdit.dataset.needWrite = "";
   bEdit.onclick = () => openNodeForm(n);
   const bEdge = document.createElement("button"); bEdge.className = "btn"; bEdge.textContent = "+ 关系";
+  bEdge.dataset.needWrite = "";
   bEdge.onclick = () => openEdgeForm(n.id);
   const bDel = document.createElement("button"); bDel.className = "btn danger"; bDel.textContent = "删除";
+  bDel.dataset.needWrite = "";
   bDel.onclick = () => confirmBox(`删除组件「${n.name}」？相关的连线会一并删除。`, () => delNode(n.id));
   acts.append(bEdit, bEdge, bDel);
   el.appendChild(acts);
@@ -506,25 +574,26 @@ async function renderPanel(kind) {
     else if (kind === "path") { el.innerHTML = renderPath(); bindPath(); }
     S.audit = await api("/audit?limit=8");
     el.insertAdjacentHTML("beforeend", renderAudit());
+    applyWritePermissions();      // DOM 重建后重新按权限显隐写按钮
   } catch (e) {
     el.innerHTML = '<div class="err">加载失败：' + e.message + "</div>";
   }
 }
 function renderNotes() {
   return `<h2>知识库</h2><div class="lead">共 ${S.notes.length} 条 · 状态流转：draft → review → published（可归档/恢复）</div>
-  <div class="pvbar"><button class="btn primary" id="nNew">+ 新建条目</button></div>
+  <div class="pvbar"><button class="btn primary" id="nNew" data-need-write>+ 新建条目</button></div>
   <div class="list">${S.notes.map(t => `
     <div class="item" data-slug="${t.slug}">
       <h4>${esc(t.title)} <span class="pill ${t.status}">${t.status}</span></h4>
       <div class="meta">${t.slug}${t.node_id ? " · 关联组件 " + esc(nameOf(t.node_id)) : ""}</div>
       <p>${esc(t.markdown)}</p>
       <div class="acts">
-        <button class="btn" data-act="edit">编辑</button>
-        ${t.status === "draft" ? '<button class="btn" data-act="publish">提交评审</button>' : ""}
-        ${t.status === "review" ? '<button class="btn" data-act="approve">发布</button>' : ""}
-        ${t.status !== "archived" ? '<button class="btn" data-act="archive">归档</button>' : ""}
-        ${t.status === "archived" ? '<button class="btn" data-act="restore">恢复</button>' : ""}
-        <button class="btn danger" data-act="del">删除</button>
+        <button class="btn" data-act="edit" data-need-write>编辑</button>
+        ${t.status === "draft" ? '<button class="btn" data-act="publish" data-need-write>提交评审</button>' : ""}
+        ${t.status === "review" ? '<button class="btn" data-act="approve" data-need-write>发布</button>' : ""}
+        ${t.status !== "archived" ? '<button class="btn" data-act="archive" data-need-write>归档</button>' : ""}
+        ${t.status === "archived" ? '<button class="btn" data-act="restore" data-need-write>恢复</button>' : ""}
+        <button class="btn danger" data-act="del" data-need-write>删除</button>
       </div>
     </div>`).join("") || '<div class="hint">还没有条目，点「新建条目」。</div>'}</div>`;
 }
@@ -549,7 +618,7 @@ function bindNotes() {
 }
 function renderSops() {
   return `<h2>排障 SOP</h2><div class="lead">共 ${S.sops.length} 条 · 按现象索引，状态流转同知识库</div>
-  <div class="pvbar"><button class="btn primary" id="sNew">+ 新建 SOP</button></div>
+  <div class="pvbar"><button class="btn primary" id="sNew" data-need-write>+ 新建 SOP</button></div>
   <div class="list">${S.sops.map(s => `
     <div class="item" data-sym="${s.symptom}">
       <h4>${esc(s.title)} <span class="pill ${s.status}">${s.status}</span></h4>
@@ -560,12 +629,12 @@ function renderSops() {
           ${st.command ? `<code>${esc(st.command)}</code>` : ""}
         </div></div>`).join("")}
       <div class="acts">
-        <button class="btn" data-act="edit">编辑</button>
-        ${s.status === "draft" ? '<button class="btn" data-act="publish">提交评审</button>' : ""}
-        ${s.status === "review" ? '<button class="btn" data-act="approve">发布</button>' : ""}
-        ${s.status !== "archived" ? '<button class="btn" data-act="archive">归档</button>' : ""}
-        ${s.status === "archived" ? '<button class="btn" data-act="restore">恢复</button>' : ""}
-        <button class="btn danger" data-act="del">删除</button>
+        <button class="btn" data-act="edit" data-need-write>编辑</button>
+        ${s.status === "draft" ? '<button class="btn" data-act="publish" data-need-write>提交评审</button>' : ""}
+        ${s.status === "review" ? '<button class="btn" data-act="approve" data-need-write>发布</button>' : ""}
+        ${s.status !== "archived" ? '<button class="btn" data-act="archive" data-need-write>归档</button>' : ""}
+        ${s.status === "archived" ? '<button class="btn" data-act="restore" data-need-write>恢复</button>' : ""}
+        <button class="btn danger" data-act="del" data-need-write>删除</button>
       </div>
     </div>`).join("") || '<div class="hint">还没有 SOP。</div>'}</div>`;
 }
@@ -589,16 +658,16 @@ function bindSops() {
 }
 function renderYamls() {
   return `<h2>YAML 实验室</h2><div class="lead">共 ${S.yamls.length} 条片段</div>
-  <div class="pvbar"><button class="btn primary" id="yNew">+ 新建片段</button></div>
+  <div class="pvbar"><button class="btn primary" id="yNew" data-need-write>+ 新建片段</button></div>
   <div class="list">${S.yamls.map(y => `
     <div class="item" data-id="${y.id}">
       <h4>${esc(y.title)}</h4>
       <div class="meta">${y.node_id ? "关联组件：" + esc(nameOf(y.node_id)) : "未关联"}</div>
       <pre class="mono" style="white-space:pre-wrap;color:#C6D6E6;font-size:12px;line-height:1.7">${esc(y.yaml)}</pre>
       <div class="acts">
-        <button class="btn" data-act="edit">编辑</button>
+        <button class="btn" data-act="edit" data-need-write>编辑</button>
         <button class="btn" data-act="copy">复制</button>
-        <button class="btn danger" data-act="del">删除</button>
+        <button class="btn danger" data-act="del" data-need-write>删除</button>
       </div>
     </div>`).join("") || '<div class="hint">还没有片段。</div>'}</div>`;
 }

@@ -264,7 +264,44 @@ class AuditOut(BaseModel):
     entity: str
     entity_id: str
     detail: str
+    actor: str
     created_at: datetime
+
+
+# ---------------- 认证 ----------------
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    last_login_at: datetime | None = None
+
+
+class UserIn(BaseModel):
+    """新建用户（仅 admin 可调）。"""
+
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=8, max_length=200)
+    role: Literal["admin", "viewer"] = "viewer"
+
+
+class UserPatch(BaseModel):
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    role: Literal["admin", "viewer"] | None = None
+    is_active: bool | None = None
+
+
+class PasswordChangeIn(BaseModel):
+    old_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
 
 
 # ---------------- 导入 ----------------

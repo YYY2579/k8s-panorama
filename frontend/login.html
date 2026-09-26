@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · K8s Panorama</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{width:380px;max-width:100%;background:var(--bg-card);border:1px solid var(--bd-2);
+    border-radius:16px;padding:30px 28px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .card h1{font-size:20px;font-weight:700;letter-spacing:var(--ls-title);margin-bottom:6px}
+  .card h1 b{color:#fff} .card h1 span{color:var(--blue-3)}
+  .card .tip{font-size:var(--fs-xs);color:var(--t3);margin-bottom:22px;line-height:var(--lh-base)}
+  .card .fld{margin-bottom:16px}
+  .card .fld label{display:block;font-size:var(--fs-xs);color:var(--t3);margin-bottom:6px;letter-spacing:var(--ls-sm)}
+  .card .fld input{width:100%;height:38px;background:var(--bg-input);border:1px solid var(--bd);
+    border-radius:9px;padding:0 12px;font-size:var(--fs-sm);color:var(--t1);outline:none}
+  .card .fld input:focus{border-color:var(--bd-sel);box-shadow:0 0 0 3px rgba(59,130,246,.14)}
+  .card button{width:100%;height:38px;background:#1B4E8F;border:1px solid #2E6FBF;color:#EAF3FF;
+    border-radius:9px;font-size:var(--fs-sm);font-weight:600;cursor:pointer;transition:background var(--dur) var(--ease)}
+  .card button:hover{background:#2260AC}
+  .card button:disabled{opacity:.6;cursor:not-allowed}
+  .err{background:#2A1418;border:1px solid #7A3040;color:#FFD9DE;font-size:var(--fs-xs);
+    padding:10px 12px;border-radius:8px;margin-bottom:14px;line-height:var(--lh-base)}
+  .foot{margin-top:18px;font-size:var(--fs-2xs);color:var(--t4);text-align:center;line-height:var(--lh-base)}
+  .foot a{color:var(--blue-2);text-decoration:none}
+  .foot a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="card" id="f" autocomplete="on">
+    <h1><b>K8s</b> <span>Panorama</span></h1>
+    <div class="tip">登录后可管理组件、知识条目与排障 SOP。未登录只能浏览图谱。</div>
+    <div class="err" id="err" hidden></div>
+    <div class="fld">
+      <label for="u">用户名</label>
+      <input id="u" name="username" autocomplete="username" required autofocus>
+    </div>
+    <div class="fld">
+      <label for="p">口令</label>
+      <input id="p" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" id="btn">登 录</button>
+    <div class="foot">
+      不知道口令？首次启动时后端会打印一次性管理员口令；<br>
+      也可用环境变量 <code>ATLAS_ADMIN_PASSWORD</code> 指定。·
+      <a href="/">返回图谱</a>
+    </div>
+  </form>
+</div>
+
+<script>
+(function(){
+  var API_BASE = (location.port === "5173" || location.protocol === "file:") ? "http://127.0.0.1:8000" : "";
+  var err = document.getElementById("err");
+  var btn = document.getElementById("btn");
+
+  // 已登录就直接回首页
+  fetch(API_BASE + "/api/auth/me", { credentials: "same-origin" })
+    .then(function(r){ if (r.ok) location.replace("/"); })
+    .catch(function(){});
+
+  document.getElementById("f").addEventListener("submit", function(e){
+    e.preventDefault();
+    err.hidden = true;
+    btn.disabled = true; btn.textContent = "登录中…";
+    fetch(API_BASE + "/api/auth/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("u").value.trim(),
+        password: document.getElementById("p").value,
+      }),
+    }).then(function(r){
+      return r.json().then(function(d){ return { ok: r.ok, d: d }; });
+    }).then(function(res){
+      if (res.ok) {
+        location.replace("/");
+      } else {
+        err.textContent = (res.d && res.d.detail) ? res.d.detail : "登录失败";
+        err.hidden = false;
+        btn.disabled = false; btn.textContent = "登 录";
+      }
+    }).catch(function(){
+      err.textContent = "无法连接后端，请确认服务已启动";
+      err.hidden = false;
+      btn.disabled = false; btn.textContent = "登 录";
+    });
+  });
+})();
+</script>
+</body>
+</html>

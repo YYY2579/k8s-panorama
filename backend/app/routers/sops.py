@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session
 
 from .. import crud, schemas
 from ..db import get_db
+from ..deps import require_admin
+from ..models import User
+from ..deps import require_admin
 
 router = APIRouter(prefix="/sops", tags=["排障SOP"])
 
@@ -15,7 +18,9 @@ def list_sops(status: str | None = None, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.SopOut, status_code=201, summary="新建 SOP")
-def create_sop(payload: schemas.SopIn, db: Session = Depends(get_db)):
+def create_sop(payload: schemas.SopIn, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.create_sop(db, payload.model_dump())
 
 
@@ -25,7 +30,9 @@ def get_sop(symptom: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{symptom}", response_model=schemas.SopOut, summary="修改 SOP")
-def update_sop(symptom: str, payload: schemas.SopPatch, db: Session = Depends(get_db)):
+def update_sop(symptom: str, payload: schemas.SopPatch, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise ValueError("没有需要更新的字段")
@@ -33,10 +40,14 @@ def update_sop(symptom: str, payload: schemas.SopPatch, db: Session = Depends(ge
 
 
 @router.delete("/{symptom}", summary="删除 SOP")
-def delete_sop(symptom: str, db: Session = Depends(get_db)):
+def delete_sop(symptom: str, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.delete_sop(db, symptom)
 
 
 @router.post("/{symptom}/transition", response_model=schemas.SopOut, summary="状态流转")
-def transition(symptom: str, payload: schemas.TransitionIn, db: Session = Depends(get_db)):
+def transition(symptom: str, payload: schemas.TransitionIn, db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),):
+    crud.set_actor(admin.username)
     return crud.transition_sop(db, symptom, payload.action, payload.comment)
