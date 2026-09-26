@@ -134,9 +134,22 @@ function applyWritePermissions() {
   }
 }
 const nodeById = id => (S.graph ? S.graph.nodes.find(n => n.id === id) : null);
+/* 分类色：深色主题用亮色系，浅色主题换深色系（同色相，保证对比度） */
+const LAYER_COLOR_LIGHT = {
+  control:"#1D64B8", dataplane:"#15803D", l7:"#7E22CE", portnat:"#C2410C",
+  policy:"#B91C1C", observe:"#0F766E", monitor:"#0369A1", storage:"#A16208"
+};
 const layerColor = id => {
   const l = S.graph && S.graph.layers.find(x => x.id === id);
-  return l ? l.color : "#5F7A97";
+  if (!l) return currentTheme() === "light" ? "#5A6E85" : "#5F7A97";
+  return currentTheme() === "light" ? (LAYER_COLOR_LIGHT[id] || l.color) : l.color;
+};
+/* 连线标签配色（跟随主题） */
+const edgeLabelColors = () => {
+  const light = currentTheme() === "light";
+  return light
+    ? { bg:"#FFFFFF", bd:"#C2CEE0", fg:"#3C4F66", fgOn:"#0F1D2E" }
+    : { bg:"#0A1626", bd:"#16273C", fg:"#7E95AF", fgOn:"#D6E7FA" };
 };
 
 /* ---------------------------------------------------------------- 启动 */
@@ -157,6 +170,32 @@ async function boot() {
   $("status").textContent =
     `已加载 ${S.graph.nodes.length} 个组件 / ${S.graph.edges.length} 条关系 · 滚轮缩放 · 双击放大 · 点击查看详情`;
 }
+/* ---------------------------------------------------------------- 主题 */
+/* 深浅切换：默认跟随系统，用户手动切过之后记住选择（localStorage）。
+   主题只影响外观，不影响数据与交互。 */
+const THEME_KEY = "atlas_theme";
+const MOON = '<path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>';
+const SUN = '<circle cx="12" cy="12" r="4.2"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/>';
+
+function currentTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  const icon = $("themeIcon");
+  if (icon) icon.innerHTML = t === "light" ? MOON : SUN;
+  const btn = $("bTheme");
+  if (btn) btn.title = t === "light" ? "切换到深色" : "切换到浅色";
+}
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+  toast(next === "light" ? "已切换到浅色主题" : "已切换到深色主题");
+}
+
 /* ---------------------------------------------------------------- 数据源 */
 /* 三个来源共用同一套槽位坐标（布局是心智锚点），只有数据不同：
    kb       知识库（我的数据）     → /api/atlas/graph
@@ -369,9 +408,9 @@ function buildLegend() {
   S.graph.layers.filter(l => l.show_in_legend !== false).forEach(l => {
     const c = document.createElement("div");
     c.className = "chip"; c.dataset.id = l.id;
-    c.style.borderColor = rgba(l.color, .5);
+    c.style.borderColor = rgba(layerColor(l.id), .5);
     const dot = document.createElement("span");
-    dot.className = "dot"; dot.style.background = l.color; dot.style.color = l.color;
+    dot.className = "dot"; dot.style.background = layerColor(l.id); dot.style.color = layerColor(l.id);
     const tx = document.createElement("span"); tx.textContent = l.label;
     c.append(dot, tx);
     c.onclick = () => { S.layerOn[l.id] = !S.layerOn[l.id]; syncLayers(); };
@@ -1337,6 +1376,11 @@ function bindGlobal() {
   };
   $("bK").onclick = () => { $("q").focus(); $("q").select(); };
   $("srcSel").onchange = e => switchSource(e.target.value);
+  applyTheme(currentTheme());
+  $("bTheme").onclick = toggleTheme;
+  matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", () => {
+    if (!localStorage.getItem(THEME_KEY)) applyTheme(currentTheme());
+  });
   $("brand").onclick = async () => { await reloadGraph(); toast("已从服务端重新拉取数据"); };
   $("bSide").onclick = () => $("side").classList.toggle("open");
   $("bInsp").onclick = () => $("insp").classList.toggle("open");
