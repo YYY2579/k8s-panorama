@@ -19,7 +19,7 @@ export.json
 *-export.json
 
 # ---------- 本机临时 ----------
-.tmpprofile/
+.tmpprofile*/
 .workbuddy/
 .DS_Store
 Thumbs.db
