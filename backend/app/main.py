@@ -1,7 +1,10 @@
 """FastAPI 应用入口。
 
 启动时：建表 → 灌种子数据（仅首次）→ 挂载路由 → 同源托管前端静态目录。
+使用 lifespan 上下文管理生命周期（FastAPI 0.93+ 推荐，替代已弃用的 on_event）。
 """
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,10 +17,27 @@ from .db import SessionLocal, engine, get_db
 from .routers import atlas, audit, edges, groups, io, layers, nodes, notes, sops, yamls
 from .seed import seed_if_empty
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """启动：建表 + 首次灌种子；关闭：当前无需释放资源。"""
+    models.Base.metadata.create_all(bind=engine)
+    if SEED_ON_STARTUP:
+        db = SessionLocal()
+        try:
+            if seed_if_empty(db):
+                print(f"[atlas] 首次启动：已灌入种子数据 -> {DATABASE_URL}")
+        finally:
+            db.close()
+    yield
+    # 关闭阶段可在此释放资源（如 flush 审计、关闭连接池）
+
+
 app = FastAPI(
     title="K8s Panorama API",
     description="Kubernetes 全景架构知识图谱 —— 后端真实实现，数据持久化在 SQLite。",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS：前端用 python -m http.server 单独起（5173）时需要
@@ -52,19 +72,7 @@ def health(db: Session = Depends(get_db)):
     return {"status": "ok", "database": "sqlite", "counts": crud.counts(db)}
 
 
-# ---------------- 启动：建表 + 种子 ----------------
-@app.on_event("startup")
-def on_startup():
-    models.Base.metadata.create_all(bind=engine)
-    if SEED_ON_STARTUP:
-        db = SessionLocal()
-        try:
-            seeded = seed_if_empty(db)
-            if seeded:
-                print(f"[atlas] 首次启动：已灌入种子数据 -> {DATABASE_URL}")
-        finally:
-            db.close()
-
+# ---------------- 启动：建表 + 种子（已由 lifespan 接管） ----------------
 
 # ---------------- 同源托管前端（放最后，避免覆盖 /api） ----------------
 if STATIC_DIR.exists():

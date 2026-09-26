@@ -19,6 +19,11 @@ PASS, FAIL = [], []
 
 
 def req(method: str, path: str, body: dict | None = None):
+    """发一次请求。
+
+    返回 (status, data)。连接失败（服务没起）时返回 (0, {"detail": ...})，
+    由调用方按失败处理，不向上抛异常。
+    """
     data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     r = urllib.request.Request(
         API + path, data=data, method=method,
@@ -34,6 +39,9 @@ def req(method: str, path: str, body: dict | None = None):
             return e.code, json.loads(raw)
         except Exception:
             return e.code, raw
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        return 0, {"detail": f"连接失败：{reason}"}
 
 
 def check(name: str, ok: bool, extra: str = ""):
@@ -57,14 +65,13 @@ def cleanup_leftovers() -> None:
 def main() -> int:
     print(f"== K8s Panorama 端到端测试 ==  {API}\n")
 
-    # ---------- 0 清理上轮残留 ----------
+    # ---------- 0 清理上轮残留（服务没起时返回 0，不抛异常） ----------
     cleanup_leftovers()
 
     # ---------- 1 健康检查 ----------
-    try:
-        st, d = req("GET", "/health")
-    except Exception as exc:  # 服务没起来
-        print(f"无法连接后端：{exc}")
+    st, d = req("GET", "/health")
+    if st == 0:
+        print(f"无法连接后端：{(d or {}).get('detail')}")
         print("请先在 backend 目录执行：python run.py")
         return 1
     check("健康检查返回 200", st == 200, str(d))

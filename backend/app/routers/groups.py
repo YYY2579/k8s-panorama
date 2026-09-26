@@ -1,5 +1,5 @@
 """分组容器增删改查。"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from .. import crud, schemas
@@ -32,5 +32,10 @@ def update_group(group_id: str, payload: schemas.GroupPatch, db: Session = Depen
 
 
 @router.delete("/{group_id}", summary="删除分组")
-def delete_group(group_id: str, force: bool = False, db: Session = Depends(get_db)):
-    return crud.delete_group(db, group_id, force)
+def delete_group(
+    group_id: str,
+    force: bool = False,
+    move_to: str | None = Query(None, description="force 时组件搬到哪个分组，不传则用排序第一个的其它分组"),
+    db: Session = Depends(get_db),
+):
+    return crud.delete_group(db, group_id, force, move_to)

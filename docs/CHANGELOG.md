@@ -1,7 +1,64 @@
 # 变更记录与验收证据
 
-本文件记录版本变更、实现过程与验收证据，属于**开发过程文档**，不属于产品说明。
-产品说明见 [`../README.md`](../README.md)，部署见 [`../deploy/README.md`](../deploy/README.md)。
+---
+
+## [1.0.1] — 2026-09-26
+
+依据 [`audits/code-review-2026-09-26.md`](audits/code-review-2026-09-26.md) 的 15 项发现全面修复。
+**未新增范围外功能**，仅修正缺陷与规范问题。
+
+### 修复
+
+**功能性缺陷**
+
+- **A1** 详情面板异步竞态：`renderInspector` 中途 `await /notes` 后不再校验是否已过期，
+  快速切换节点时旧节点的「相关知识条目」会追加到新节点面板。改为渲染令牌对账。
+- **A2** 测试脚本在服务未启动时崩溃：`req()` 只捕 `HTTPError` 不捕 `URLError`，
+  而 `cleanup_leftovers()` 排在健康检查之前。改为两者都捕获，连接失败返回 0 由调用方判失败。
+- **A3** `delete_node` 冗余置空：模型外键已声明 `ondelete="SET NULL"` 且已开启
+  `PRAGMA foreign_keys=ON`，手工 `UPDATE` 既重复又绕过 ORM 缓存。已删除，依赖外键自动处理。
+- **A4** `import` 的 replace 模式无事务保护：清空后立即 `commit`，导入失败会丢数据。
+  改为清空与导入同一事务，任一步失败整体回滚，并以 400 返回具体原因。
+- **A5** 导入接口无结构校验：`payload: dict` 接受任意 JSON。新增 `schemas.ImportPayload`，
+  列表字段非数组直接 422。
+
+**健壮性与安全性**
+
+- **B1** `drawEdges` 对 `nodeById()` 未判空：边引用缺失节点时整片连线消失。改为先取节点判空再用，
+  同时消除了一条边内三次重复查询。
+- **B2** `api()` 无超时：后端卡住时前端永久无反馈。加 `AbortController` + 15s 超时与明确错误。
+- **B3** `syncLayers` 用 `indexOf` 反查图层：正确性依赖隐式的 DOM 顺序，左栏结构一变就错位。
+  改为 `forEach` 下标 + 过滤后数组。
+
+**性能**
+
+- **C1** `drawEdges` 每次 hover / 缩放 / 平移全量重建约 210 个 SVG 节点。
+  全部 8 个调用点改走 `scheduleDrawEdges()` 合帧，并加 `setTimeout` 兜底
+  （无头渲染环境 rAF 不触发，没有兜底会画不出连线）。
+- **C2** `import_all` 的 node / sop 分支在循环内逐行 `flush`。移到循环外，语句往返从 N 次降到 1 次。
+
+**规范与可维护性**
+
+- **D1** `@app.on_event("startup")` 已弃用，改用 `lifespan` 异步上下文管理器。
+- **D2** `config.py` 在 import 时创建目录，拆出 `ensure_db_dir()` 由 `db.py` 在建 engine 前调用。
+- **D3** datetime 混用 aware / naive，比较时会抛 `TypeError`。
+  `models._now()` 与新增的 `crud._utcnow()` 统一返回 naive UTC。
+- **D4** `delete_group(force=True)` 隐式把节点搬到"排序第一个的其它分组"，
+  用户感知为节点消失。新增显式 `move_to` 参数，目标不存在返回 400 且分组与组件都不动，
+  审计日志记录搬迁去向。
+- **D5** 前端两种渲染范式混用、`esc()` 定义在使用点之后。`esc()` 前移至文件首部工具区
+  （删除重复定义），并在文件头写明渲染范式约定。
+
+### 验收证据
+
+| 测试 | 结果 |
+|---|---|
+| `python scripts/test_api.py`（原有 50 项断言） | PASS 50 / FAIL 0 |
+| 修复专项验证（A3/A4/A5/D3/D4，18 项断言） | PASS 18 / FAIL 0 |
+| 前端注入测试（A1/B1/B2/C1/D5 + 首屏/搜索/图层/页签，12 项断言） | PASS 12 / FAIL 0 |
+
+合计 80 项断言全部通过；回归后数据库计数回到 41 组件 / 42 关系，无残留测试数据。
+详细逐项证据见审查报告末尾的「修复状态」章节。
 
 ---
 

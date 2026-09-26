@@ -17,6 +17,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from . import models
 
+
+def _utcnow():
+    """naive UTC。SQLite 的 DateTime 列不保存时区，aware/naive 混用会在比较时抛
+    TypeError，因此与 models._now() 保持同一种表示（详见 D3 审查项）。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # ------------------------------------------------------------------ 审计
 def audit(db: Session, action: str, entity: str, entity_id: str, detail: str = "") -> models.AuditLog:
     row = models.AuditLog(action=action, entity=entity, entity_id=str(entity_id), detail=detail)
@@ -88,24 +95,36 @@ def update_group(db: Session, group_id: str, data: dict[str, Any]) -> models.Gro
     return obj
 
 
-def delete_group(db: Session, group_id: str, force: bool = False) -> dict:
+def delete_group(db: Session, group_id: str, force: bool = False, move_to: str | None = None) -> dict:
+    """删除分组。
+
+    force=True 时把该分组下的组件搬到 move_to 指定的分组（不传则用排序第一个的其它分组，
+    并在返回值里说明去向），避免外键悬空。目标分组必须显式存在，不接隐式猜测。
+    """
     obj = get_group(db, group_id)
     used = db.scalar(select(func.count()).select_from(models.Node).where(models.Node.group_id == group_id))
     if used and not force:
-        raise HTTPException(409, f"该分组下还有 {used} 个组件，请先移走或加 ?force=true")
-    if used:  # force：把节点挂到第一个其余分组，避免外键悬空
-        other = db.scalars(select(models.Group).where(models.Group.id != group_id)).first()
-        if not other:
-            raise HTTPException(409, "无法强制删除：系统至少要保留一个分组")
+        raise HTTPException(409, f"该分组下还有 {used} 个组件，请先移走或用 force 并指定 move_to")
+    if used:
+        if move_to:
+            target = move_to
+            if not db.get(models.Group, target):
+                raise HTTPException(400, f"目标分组不存在：{target}")
+        else:
+            other = db.scalars(select(models.Group).where(models.Group.id != group_id)).first()
+            if not other:
+                raise HTTPException(409, "无法强制删除：系统至少要保留一个分组")
+            target = other.id
         db.execute(
             models.Node.__table__.update()
             .where(models.Node.group_id == group_id)
-            .values(group_id=other.id)
+            .values(group_id=target)
         )
+        audit(db, "move", "node", "-", f"{used} 个组件从 {group_id} 移至 {target}")
     db.delete(obj)
-    audit(db, "delete", "group", group_id, f"force={force}")
+    audit(db, "delete", "group", group_id, f"force={force}" + (f" move_to={target}" if used else ""))
     db.commit()
-    return {"deleted": 1, "id": group_id, "moved_nodes": used if force else 0}
+    return {"deleted": 1, "id": group_id, "moved_nodes": used if force else 0, "moved_to": target if used else None}
 
 
 # ------------------------------------------------------------------ 组件
@@ -164,7 +183,7 @@ def update_node(db: Session, node_id: str, data: dict[str, Any]) -> models.Node:
             models.NodeField(label=f.get("label", ""), value=f.get("value", ""), sort_order=i)
             for i, f in enumerate(fields)
         ]
-    obj.updated_at = datetime.now(timezone.utc)
+    obj.updated_at = _utcnow()
     audit(db, "update", "node", node_id, json.dumps(data, ensure_ascii=False, default=str))
     db.commit()
     db.refresh(obj)
@@ -173,15 +192,9 @@ def update_node(db: Session, node_id: str, data: dict[str, Any]) -> models.Node:
 
 def delete_node(db: Session, node_id: str) -> dict:
     obj = get_node(db, node_id)
-    # 边、字段由 ORM 级联删除；note / yaml 的 node_id 置空
-    db.execute(
-        models.Note.__table__.update().where(models.Note.node_id == node_id).values(node_id=None)
-    )
-    db.execute(
-        models.YamlSnippet.__table__.update()
-        .where(models.YamlSnippet.node_id == node_id)
-        .values(node_id=None)
-    )
+    # Edge / NodeField 由 ORM cascade 删除；
+    # Note / YamlSnippet 的 node_id 由外键 ondelete="SET NULL" 自动置空
+    # （db.py 的连接钩子已开启 PRAGMA foreign_keys=ON），无需手工 UPDATE
     db.delete(obj)
     audit(db, "delete", "node", node_id, obj.name)
     db.commit()
@@ -282,7 +295,7 @@ def update_note(db: Session, slug: str, data: dict[str, Any]) -> models.Note:
     for k, v in data.items():
         if v is not None:
             setattr(obj, k, v)
-    obj.updated_at = datetime.now(timezone.utc)
+    obj.updated_at = _utcnow()
     audit(db, "update", "note", slug, json.dumps(data, ensure_ascii=False, default=str))
     db.commit()
     db.refresh(obj)
@@ -306,7 +319,7 @@ def transition_note(db: Session, slug: str, action: str, comment: str = "") -> m
         raise HTTPException(400, f"已经处于 {to} 状态")
     old = obj.status
     obj.status = to
-    obj.updated_at = datetime.now(timezone.utc)
+    obj.updated_at = _utcnow()
     audit(db, "transition", "note", slug, f"{old} --{action}--> {to} {comment}".strip())
     db.commit()
     db.refresh(obj)
@@ -349,7 +362,7 @@ def update_sop(db: Session, symptom: str, data: dict[str, Any]) -> models.Sop:
             setattr(obj, k, v)
     if steps is not None:
         obj.steps = [models.SopStep(**s) for s in steps]
-    obj.updated_at = datetime.now(timezone.utc)
+    obj.updated_at = _utcnow()
     audit(db, "update", "sop", symptom, json.dumps(data, ensure_ascii=False, default=str))
     db.commit()
     db.refresh(obj)
@@ -373,7 +386,7 @@ def transition_sop(db: Session, symptom: str, action: str, comment: str = "") ->
         raise HTTPException(400, f"已经处于 {to} 状态")
     old = obj.status
     obj.status = to
-    obj.updated_at = datetime.now(timezone.utc)
+    obj.updated_at = _utcnow()
     audit(db, "transition", "sop", symptom, f"{old} --{action}--> {to} {comment}".strip())
     db.commit()
     db.refresh(obj)
@@ -521,7 +534,7 @@ def _coerce_row(model, row: dict) -> dict:
             try:
                 v = datetime.fromisoformat(v)
             except ValueError:
-                v = datetime.now(timezone.utc)
+                v = _utcnow()
         out[c.name] = v
     return out
 
@@ -531,80 +544,90 @@ def import_all(db: Session, payload: dict, mode: str = "merge") -> dict:
 
     mode=replace  —— 先清空业务表再导入
     mode=merge    —— 已存在则更新，不存在则新建
+
+    整个导入（含 replace 的清空）在同一个事务里：全部成功才提交，
+    任一步失败整体回滚，不会出现"清空已落库、导入却失败"导致的数据丢失。
     """
     stats = {"layers": 0, "groups": 0, "nodes": 0, "edges": 0, "notes": 0, "sops": 0, "yamls": 0}
 
-    if mode == "replace":
-        for table in (
-            models.SopStep, models.Sop, models.Note, models.YamlSnippet,
-            models.Edge, models.NodeField, models.Node, models.Group, models.Layer,
-        ):
-            db.execute(table.__table__.delete())
-        db.commit()
+    try:
+        if mode == "replace":
+            # 先子表后父表，避免外键冲突
+            for table in (
+                models.SopStep, models.Sop, models.Note, models.YamlSnippet,
+                models.Edge, models.NodeField, models.Node, models.Group, models.Layer,
+            ):
+                db.execute(table.__table__.delete())
+            db.flush()
 
-    def _merge(model, pk, rows):
-        n = 0
-        for row in rows:
-            row = _coerce_row(model, row)
-            if pk not in row:
-                continue
-            obj = db.get(model, row[pk])
+        def _merge(model, pk, rows):
+            n = 0
+            for row in rows:
+                row = _coerce_row(model, row)
+                if pk not in row:
+                    continue
+                obj = db.get(model, row[pk])
+                if obj is None:
+                    db.add(model(**row))
+                else:
+                    for k, v in row.items():
+                        if k != pk:
+                            setattr(obj, k, v)
+                n += 1
+            db.flush()          # 循环外统一 flush 一次，减少语句往返
+            return n
+
+        stats["layers"] = _merge(models.Layer, "id", payload.get("layers", []))
+        stats["groups"] = _merge(models.Group, "id", payload.get("groups", []))
+        stats["notes"] = _merge(models.Note, "slug", payload.get("notes", []))
+        stats["edges"] = _merge(models.Edge, "id", payload.get("edges", []))
+        stats["yamls"] = _merge(models.YamlSnippet, "id", payload.get("yamls", []))
+
+        for row in payload.get("nodes", []):
+            fields = row.pop("fields", [])
+            row = _coerce_row(models.Node, row)
+            obj = db.get(models.Node, row["id"])
             if obj is None:
-                db.add(model(**row))
+                obj = models.Node(**row)
+                db.add(obj)
             else:
                 for k, v in row.items():
-                    if k != pk:
+                    if k != "id":
                         setattr(obj, k, v)
-            n += 1
+                obj.fields.clear()
+            obj.fields = [
+                models.NodeField(label=f.get("label", ""), value=f.get("value", ""), sort_order=i)
+                for i, f in enumerate(fields)
+            ]
+            stats["nodes"] += 1
         db.flush()
-        return n
 
-    stats["layers"] = _merge(models.Layer, "id", payload.get("layers", []))
-    stats["groups"] = _merge(models.Group, "id", payload.get("groups", []))
-    stats["notes"] = _merge(models.Note, "slug", payload.get("notes", []))
-    stats["edges"] = _merge(models.Edge, "id", payload.get("edges", []))
-    stats["yamls"] = _merge(models.YamlSnippet, "id", payload.get("yamls", []))
+        for row in payload.get("sops", []):
+            steps = row.pop("steps", [])
+            row = _coerce_row(models.Sop, row)
+            obj = db.get(models.Sop, row["symptom"])
+            if obj is None:
+                obj = models.Sop(**row)
+                db.add(obj)
+            else:
+                for k, v in row.items():
+                    if k != "symptom":
+                        setattr(obj, k, v)
+                obj.steps.clear()
+            obj.steps = [models.SopStep(**s) for s in steps]
+            stats["sops"] += 1
+        db.flush()
 
-    for row in payload.get("nodes", []):
-        fields = row.pop("fields", [])
-        row = _coerce_row(models.Node, row)
-        obj = db.get(models.Node, row["id"])
-        if obj is None:
-            obj = models.Node(**row)
-            db.add(obj)
-            db.flush()
-        else:
-            for k, v in row.items():
-                if k != "id":
-                    setattr(obj, k, v)
-            obj.fields.clear()
-            db.flush()
-        obj.fields = [
-            models.NodeField(label=f.get("label", ""), value=f.get("value", ""), sort_order=i)
-            for i, f in enumerate(fields)
-        ]
-        stats["nodes"] += 1
-    db.flush()
-
-    for row in payload.get("sops", []):
-        steps = row.pop("steps", [])
-        row = _coerce_row(models.Sop, row)
-        obj = db.get(models.Sop, row["symptom"])
-        if obj is None:
-            obj = models.Sop(**row)
-            db.add(obj)
-            db.flush()
-        else:
-            for k, v in row.items():
-                if k != "symptom":
-                    setattr(obj, k, v)
-            obj.steps.clear()
-            db.flush()
-        obj.steps = [models.SopStep(**s) for s in steps]
-        stats["sops"] += 1
-
-    audit(db, "import", "atlas", "-", f"mode={mode} " + json.dumps(stats))
-    db.commit()
+        audit(db, "import", "atlas", "-", f"mode={mode} " + json.dumps(stats))
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        # 转成 400 并带上原因：调用方要知道是哪条数据有问题，
+        # 而不是只看到 "Internal Server Error"
+        raise HTTPException(400, f"导入失败，已整体回滚，数据未改动：{exc}") from exc
     return stats
 
 

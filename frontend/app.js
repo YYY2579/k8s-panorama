@@ -22,29 +22,53 @@ const S = {
   offs: {},
 };
 
+/* ---------------------------------------------------------------- 工具区 */
+/* 渲染范式约定（对应 docs/DEVELOPMENT.md 第 4 节）：
+   1) 含用户输入的展示一律经过 esc() 转义，禁止把未转义文本拼进 HTML 字符串；
+   2) 画布 / 右栏这类结构化面板用 DOM API（安全性由机制保证）；
+   3) 列表类面板用模板字符串 + esc()，但必须逐个字段转义。
+   新增代码照此办理，不要再混用第三种写法。 */
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+const rgba = (hex, a) => {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${a})`;
+};
+
 /* ---------------------------------------------------------------- API */
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) {
-    const msg = (data && data.detail) ? JSON.stringify(data.detail) : (text || res.status);
-    throw new Error(msg);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);      // 15s 超时，避免永久挂起
+  try {
+    const res = await fetch(API + path, {
+      headers: { "Content-Type": "application/json" },
+      signal: ac.signal,
+      ...opts,
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (!res.ok) {
+      const msg = (data && data.detail) ? JSON.stringify(data.detail) : (text || res.status);
+      throw new Error(msg);
+    }
+    return data;
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("请求超时（15s），请检查后端是否在运行");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 const nodeById = id => (S.graph ? S.graph.nodes.find(n => n.id === id) : null);
 const layerColor = id => {
   const l = S.graph && S.graph.layers.find(x => x.id === id);
   return l ? l.color : "#5F7A97";
-};
-const rgba = (hex, a) => {
-  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${a})`;
 };
 
 /* ---------------------------------------------------------------- 启动 */
@@ -150,12 +174,13 @@ function focusView(vid) {
   } else fit();
 }
 function syncLayers() {
-  document.querySelectorAll(".ck").forEach(d => {
-    const l = S.graph.layers.filter(x => x.show_in_filter !== false)[[...document.querySelectorAll(".ck")].indexOf(d)];
+  const filterable = S.graph.layers.filter(x => x.show_in_filter !== false);
+  document.querySelectorAll(".ck").forEach((d, i) => {   // forEach 自带下标，不再用 indexOf 反查
+    const l = filterable[i];
     if (l) d.classList.toggle("off", !S.layerOn[l.id]);
   });
   document.querySelectorAll(".chip").forEach(d => d.classList.toggle("off", !S.layerOn[d.dataset.id]));
-  applyVisibility(); drawEdges();
+  applyVisibility(); scheduleDrawEdges();
   const vis = S.graph.nodes.filter(n => S.layerOn[n.layer_id]).length;
   const st = $("status");
   if (vis === 0) {
@@ -195,6 +220,19 @@ function buildLegend() {
 }
 
 /* ---------------------------------------------------------------- 画布 */
+/* drawEdges 会重建约 210 个 SVG 节点。hover / 缩放平移会高频触发，
+   用合帧调度：同一批触发只画一次。
+   rAF 之外加 setTimeout 兜底 —— 部分无头渲染环境里 rAF 不触发，
+   没有兜底会出现"连线永远画不出来"。 */
+let edgeToken = 0;
+function scheduleDrawEdges() {
+  const my = ++edgeToken;
+  const run = () => {
+    if (my === edgeToken) { edgeToken = 0; drawEdges(); }
+  };
+  if (window.requestAnimationFrame) requestAnimationFrame(run);
+  setTimeout(run, 50);          // 谁先到谁画，后到的被 token 挡掉
+}
 function buildCanvas() {
   const gl = $("glayer"); gl.innerHTML = "";
   S.graph.groups.forEach(g => {
@@ -226,8 +264,8 @@ function buildCanvas() {
     place(d, n);
     d.onclick = e => { e.stopPropagation(); select(n.id); };
     d.ondblclick = e => { e.stopPropagation(); zoomTo(n.id); };
-    d.onmouseenter = () => { S.hov = n.id; drawEdges(); };
-    d.onmouseleave = () => { S.hov = null; drawEdges(); };
+    d.onmouseenter = () => { S.hov = n.id; scheduleDrawEdges(); };
+    d.onmouseleave = () => { S.hov = null; scheduleDrawEdges(); };
     bindDrag(d, n);
     nl.appendChild(d);
   });
@@ -259,12 +297,14 @@ function drawEdges() {
   const NS = "http://www.w3.org/2000/svg";
   const focus = S.sel || S.hov;
   S.graph.edges.forEach(e => {
-    if (!S.layerOn[nodeById(e.from_node).layer_id] || !S.layerOn[nodeById(e.to_node).layer_id]) return;
+    const from = nodeById(e.from_node), to = nodeById(e.to_node);
+    if (!from || !to) return;                                   // 先判空再用，避免整片连线消失
+    if (!S.layerOn[from.layer_id] || !S.layerOn[to.layer_id]) return;
     const A = box(e.from_node), B = box(e.to_node); if (!A || !B) return;
     const P1 = anchor(A, B), P2 = anchor(B, A);
     const x1 = P1.x, y1 = P1.y, x2 = P2.x, y2 = P2.y, dx = x2 - x1;
     const c1 = x1 + dx * .42, c2 = x2 - dx * .42;
-    const col = layerColor(nodeById(e.from_node).layer_id);
+    const col = layerColor(from.layer_id);
     const mx = .125 * x1 + .375 * c1 + .375 * c2 + .125 * x2, my = (y1 + y2) / 2;
     const on = focus && (e.from_node === focus || e.to_node === focus);
     const off = focus && !on;
@@ -305,7 +345,7 @@ function applyT() {
   S.graph && ($("stage").dataset.lod = S.t.s >= .4 ? "full" : (S.t.s >= .28 ? "mid" : "min"));
   $("stage").style.transform = `translate(${S.t.x}px,${S.t.y}px) scale(${S.t.s})`;
   $("zoominfo").textContent = Math.round(S.t.s * 100) + "%";
-  drawEdges();
+  scheduleDrawEdges();
 }
 function zoom(k, cx, cy) {
   const vp = $("viewport");
@@ -334,15 +374,23 @@ function center(id, s) {
 function zoomTo(id) { select(id, true); center(id, 1); toast("阅读模式：100%"); }
 
 /* ---------------------------------------------------------------- 选中 / 右栏 */
+/* 详情面板渲染令牌：快速切换节点时，丢弃已过期的异步请求结果，
+   避免旧节点的「相关知识条目」被追加到新节点的面板后面 */
+let inspToken = 0;
+
 function select(id, silent, centerIt) {
   S.sel = id;
   document.querySelectorAll(".node").forEach(d => d.classList.toggle("sel", d.dataset.id === id));
   document.querySelectorAll(".oitem").forEach(d => d.classList.toggle("on", d.dataset.id === id));
-  drawEdges(); renderInspector(id);
+  scheduleDrawEdges(); renderInspector(id);
   if (centerIt) center(id);
-  if (!silent) $("status").textContent = "已选中 · " + nodeById(id).name + " · 双击放大 · 右侧可编辑";
+  const cur = nodeById(id);
+  if (!silent && cur) {
+    $("status").textContent = "已选中 · " + cur.name + " · 双击放大 · 右侧可编辑";
+  }
 }
 async function renderInspector(id) {
+  const my = ++inspToken;
   const n = nodeById(id); if (!n) return;
   const el = $("insp"); el.innerHTML = "";
   const h = document.createElement("h2"); h.textContent = n.name;
@@ -408,6 +456,7 @@ async function renderInspector(id) {
   /* 关联知识条目（真实查询） */
   try {
     const notes = await api("/notes?node_id=" + encodeURIComponent(id));
+    if (my !== inspToken) return;          // 已有更新的渲染，丢弃本次结果
     if (notes.length) {
       el.appendChild(card("相关知识条目", () => {
         const box = document.createElement("div");
@@ -631,7 +680,6 @@ function renderAudit() {
     <td>${esc(String(a.detail || "").slice(0, 60))}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
-const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /* ---------------------------------------------------------------- 表单 */
 function openModal(title, bodyHtml, footButtons) {
@@ -898,7 +946,7 @@ function bindDrag(el, n) {
       const dx = (ev.clientX - sx) / S.t.s, dy = (ev.clientY - sy) / S.t.s;
       if (Math.abs(dx) > 1.5 || Math.abs(dy) > 1.5) moved = true;
       S.offs[n.id] = { x: o.x + dx, y: o.y + dy };
-      place(el, n); drawEdges();
+      place(el, n); scheduleDrawEdges();
     };
     const up = () => {
       document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up);
@@ -922,7 +970,7 @@ function bindGlobal() {
     toast(S.links ? "已显示连线" : "已隐藏连线");
   };
   $("bAnim").onclick = () => {
-    S.anim = !S.anim; $("bAnim").classList.toggle("on", S.anim); drawEdges();
+    S.anim = !S.anim; $("bAnim").classList.toggle("on", S.anim); scheduleDrawEdges();
     toast(S.anim ? "已开启流动动画" : "已关闭流动动画");
   };
   $("bExport").onclick = async () => {
@@ -994,7 +1042,7 @@ function bindCanvas() {
     if (e.target.closest(".node")) return;
     S.sel = null;
     document.querySelectorAll(".node").forEach(d => d.classList.remove("sel"));
-    drawEdges();
+    scheduleDrawEdges();
   });
   vp.addEventListener("wheel", e => {
     e.preventDefault();

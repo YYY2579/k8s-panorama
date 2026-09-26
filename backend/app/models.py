@@ -17,7 +17,13 @@ from .db import Base
 
 
 def _now():
-    return datetime.now(timezone.utc)
+    """统一返回 naive UTC 时间。
+
+    SQLite 的 DateTime 列不保存时区信息：写 aware 读回来是 naive，
+    两种表示混用会在比较时抛 TypeError。这里在源头统一成 naive UTC，
+    语义（UTC）不变，读写一致。
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Layer(Base):

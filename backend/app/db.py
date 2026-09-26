@@ -5,12 +5,14 @@ SQLite 需要打开外键约束（默认关闭），这里在连接建立时执�
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from .config import DATABASE_URL
+from .config import DATABASE_URL, ensure_db_dir
 
 
 class Base(DeclarativeBase):
     """所有 ORM 模型的基类。"""
 
+
+ensure_db_dir()          # 建连前确保目录存在（import 阶段不产生副作用）
 
 engine = create_engine(
     DATABASE_URL,

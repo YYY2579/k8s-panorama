@@ -267,6 +267,26 @@ class AuditOut(BaseModel):
     created_at: datetime
 
 
+# ---------------- 导入 ----------------
+class ImportPayload(BaseModel):
+    """导入接口的结构校验。
+
+    各列表字段必须是数组（元素是 dict，字段级过滤由 crud._coerce_row 负责）；
+    顶层允许额外字段，便于向后兼容导出格式的增补。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    version: int = 1
+    layers: list[dict] = Field(default_factory=list)
+    groups: list[dict] = Field(default_factory=list)
+    nodes: list[dict] = Field(default_factory=list)
+    edges: list[dict] = Field(default_factory=list)
+    notes: list[dict] = Field(default_factory=list)
+    sops: list[dict] = Field(default_factory=list)
+    yamls: list[dict] = Field(default_factory=list)
+
+
 # ---------------- 聚合 / 搜索 ----------------
 class GraphOut(BaseModel):
     """前端首屏一次拿全。"""

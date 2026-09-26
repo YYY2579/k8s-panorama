@@ -18,6 +18,7 @@ export.json
 
 # ---------- 本机临时 ----------
 .tmpprofile/
+.workbuddy/
 .DS_Store
 Thumbs.db
 
