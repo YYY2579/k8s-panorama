@@ -89,9 +89,9 @@ M2 是差异化核心，且按铁律设计成对现有代码零侵入；M3 呼�
 
 | 里程碑 | 内容 | 出口标准 |
 |---|---|---|
-| **M1a 可信** | 鉴权 | 未登录 401；viewer 不可写；写操作记录操作者 |
-| **M1b 绿勾** | CI + pytest | Actions 跑 `pytest` + `test_api.py` 全绿；README 有 badge；`pytest` ≥ 40 用例 |
-| **M1c 可迁** | Alembic | `alembic upgrade head` 可从空库建到当前结构；`reset_db.py` 退位为开发工具 |
+| **M1a 可信** ✅ | 鉴权 | 未登录 401；viewer 不可写；写操作记录操作者 |
+| **M1b 绿勾** ✅ | CI + pytest | Actions 跑 `pytest` + `test_api.py` 全绿；README 有 badge；`pytest` ≥ 40 用例 |
+| **M1c 可迁** ✅ | Alembic | `alembic upgrade head` 可从空库建到当前结构；`reset_db.py` 退位为开发工具 |
 | **M2a 连得上** | 集群只读探针 | 见集群设计文档第 8 节 8 项 |
 | **M2b 看得见** | 资源可视化展示 | 见集群设计文档第 7 节 8 项（槽位一致 / 未检测到置灰 / 异常染色 / 双类连线 / 参数化命令 / 异常命令置顶 / 写标记 / 断连降级） |
 | **M3 排得断** | 交互式排障演练 | 注入剧本 → 按 SOP 操作 → 系统判分并留痕；可从集群实况或剧本取事实源 |
@@ -125,11 +125,27 @@ M2 是差异化核心，且按铁律设计成对现有代码零侵入；M3 呼�
 
 ## 6. 待决策项
 
-| 问题 | 选项 | 建议 |
+| 问题 | 选项 | 结论 |
 |---|---|---|
-| 鉴权方案 | session-cookie / JWT / Basic Auth | session-cookie + `itsdangerous`，最简单且够用 |
+| 鉴权方案 | session-cookie / JWT / Basic Auth | ✅ **已定**：session-cookie + `itsdangerous`；口令 pbkdf2_sha256（stdlib） |
 | 集群凭证来源 | kubeconfig 文件 / ServiceAccount token / 二者皆可 | 先做 kubeconfig 文件，SA token 作为第二来源 |
 | 集群视图形态 | 独立页签 / 全景图叠加层 | **独立页签**（叠加层就是冲突源本身） |
 | 集群视图布局 | 复用全景图槽位坐标 / 按实际拓扑重新推导 | **复用槽位坐标**（布局是心智锚点，坐标是布局不是数据） |
 | 是否需要快照落库 | 纯内存 TTL / 落 `cluster_snapshot` 表 | 纯内存 TTL 起步，需要历史对比时再落库 |
 | 排障演练的判分方式 | 步骤顺序严格匹配 / 关键步骤匹配 | 关键步骤匹配，容错但仍有约束 |
+
+---
+
+## 7. M1 完成情况（2026-09-26）
+
+已实现并推送（commit `abea146`）：
+
+- **M1a** `user` 表、pbkdf2_sha256 口令哈希、itsdangerous 签名 cookie、admin/viewer 两级权限、
+  22 个写接口要求 admin、审计 `actor` 字段、首启引导、前端登录页与权限显隐
+- **M1b** 73 个 pytest 用例、`.github/workflows/ci.yml`、`test_api.py` 适配登录
+- **M1c** Alembic 初始迁移（11 张业务表）、启动走 `upgrade head`、`ensure_migration_state()` 兼容旧库
+
+回归结果：`pytest` 73 passed / `test_api.py` 51 PASS / 前端注入测试 19 PASS。
+细节见 [`../CHANGELOG.md`](../CHANGELOG.md) 的 1.1.0 一节。
+
+**下一步**：M2a 集群只读探针（见 [`k8s-cluster-module.md`](k8s-cluster-module.md)）。
