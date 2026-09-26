@@ -15,9 +15,12 @@ from sqlalchemy.orm import Session
 
 from . import crud, models  # noqa: F401  （确保模型被导入，迁移才能看到全部表）
 from .bootstrap import ensure_admin, ensure_migration_state, upgrade_schema
+from .cluster.router import router as cluster_router
 from .config import API_PREFIX, CORS_ORIGINS, DATABASE_URL, SEED_ON_STARTUP, STATIC_DIR
 from .db import SessionLocal, engine, get_db
-from .routers import atlas, audit, auth, edges, groups, io, layers, nodes, notes, sops, yamls
+from .routers import (
+    atlas, audit, auth, edges, groups, io, layers, nodes, notes, official, sops, yamls,
+)
 from .seed import seed_if_empty
 
 
@@ -68,8 +71,11 @@ async def _value_error_handler(_request: Request, exc: ValueError):
 
 
 # ---------------- 路由注册 ----------------
-for r in (atlas, groups, nodes, edges, layers, notes, sops, yamls, audit, auth, io):
+for r in (atlas, groups, nodes, edges, layers, notes, sops, yamls, audit, auth, official, io):
     app.include_router(r.router, prefix=API_PREFIX)
+
+# 集群接入：独立前缀，与 /api/atlas 物理分离（互不 import）
+app.include_router(cluster_router, prefix=API_PREFIX)
 
 
 @app.get(f"{API_PREFIX}/ping", tags=["图谱"], summary="最简探活")

@@ -13,7 +13,7 @@ const API = API_BASE + "/api";
 const $ = id => document.getElementById(id);
 
 const S = {
-  graph: null,          // {layers, groups, nodes, edges}
+  graph: null,          // {layers, groups, nodes, edges} —— 当前数据源的全景底图
   notes: [], sops: [], yamls: [], audit: [],
   layerOn: {},          // 图层显隐
   sel: null, hov: null,
@@ -22,8 +22,12 @@ const S = {
   links: true, anim: false,
   offs: {},
   me: null,             // 当前登录用户 {id, username, role}；未登录为 null
+  source: "kb",         // 数据源：kb（我的数据）/ official（出厂）/ cluster（集群实况）
+  cluster: null,        // 集群标注 {component_id -> {state, detail}}
+  clusterMeta: null,    // 集群状态元信息 {degraded, version, elapsed_ms, message}
 };
 const canWrite = () => !!S.me && S.me.role === "admin";
+const isCluster = () => S.source === "cluster";
 
 
 /* ---------------------------------------------------------------- 工具区 */
@@ -152,6 +156,97 @@ async function boot() {
   if (first) select(first.id, true);
   $("status").textContent =
     `已加载 ${S.graph.nodes.length} 个组件 / ${S.graph.edges.length} 条关系 · 滚轮缩放 · 双击放大 · 点击查看详情`;
+}
+/* ---------------------------------------------------------------- 数据源 */
+/* 三个来源共用同一套槽位坐标（布局是心智锚点），只有数据不同：
+   kb       知识库（我的数据）     → /api/atlas/graph
+   official 官方全景（出厂数据）   → /api/atlas/official（来自 seed，不受编辑影响）
+   cluster  集群实况（接入 K8s）   → /api/atlas/graph 做底 + /api/cluster/components 填状态 */
+async function loadGraph(source) {
+  const path = source === "official" ? "/atlas/official" : "/atlas/graph";
+  S.graph = await api(path);
+  S.graph.layers.forEach(l => { if (S.layerOn[l.id] === undefined) S.layerOn[l.id] = true; });
+  if (source === "cluster") {
+    await loadCluster();
+  } else {
+    S.cluster = null;
+    S.clusterMeta = null;
+    renderClusterChip();
+  }
+}
+
+async function loadCluster() {
+  const chip = $("clusterChip");
+  try {
+    const st = await api("/cluster/status");
+    S.clusterMeta = st;
+    S.cluster = {};
+    (st.components || []).forEach(c => { S.cluster[c.component_id] = c; });
+    renderClusterChip();
+  } catch (e) {
+    // 集群不可用：降级为纯知识图谱，不影响其它功能
+    S.cluster = null;
+    S.clusterMeta = { degraded: true, message: e.message };
+    renderClusterChip();
+    toast("集群未连接，已降级为知识库视图：" + e.message);
+    $("srcSel").value = "kb";
+    S.source = "kb";
+    await loadGraph("kb");
+    return false;
+  }
+  return true;
+}
+
+function renderClusterChip() {
+  const chip = $("clusterChip"); if (!chip) return;
+  if (S.source !== "cluster") { chip.hidden = true; return; }
+  chip.hidden = false;
+  const m = S.clusterMeta || {};
+  if (m.degraded) {
+    chip.className = "chip bad";
+    chip.textContent = "集群未连接";
+    chip.title = (m.message || "无法连接集群") + "\n已降级为知识库视图";
+    return;
+  }
+  const bad = Object.values(S.cluster || {}).filter(c => c.state === "unhealthy").length;
+  chip.className = "chip " + (bad ? "bad" : "ok");
+  chip.textContent = bad ? `集群已连接 · ${bad} 项异常` : "集群已连接";
+  chip.title = `K8s ${m.version || ""} · 采集耗时 ${m.elapsed_ms || 0}ms`;
+}
+
+/* 把集群标注应用到画布卡片上（槽位四态） */
+function applyClusterStates() {
+  document.querySelectorAll(".node").forEach(d => {
+    const id = d.dataset.id;
+    const old = d.querySelector(".cs-tag, .cs-live");
+    if (old) old.remove();
+    if (!isCluster()) { d.removeAttribute("data-cstate"); return; }
+    const c = S.cluster && S.cluster[id];
+    if (!c) { d.removeAttribute("data-cstate"); return; }
+    d.dataset.cstate = c.state;
+    const label = { unhealthy: "异常", not_detected: "未检测到", unknown: "采集不到", present: "" }[c.state] || "";
+    if (label) {
+      const tag = document.createElement("span");
+      tag.className = "cs-tag"; tag.textContent = label;
+      d.appendChild(tag);
+    }
+    if (c.state === "present" || c.state === "unhealthy") {
+      const live = document.createElement("div");
+      live.className = "cs-live";
+      live.textContent = liveText(c.detail);
+      d.appendChild(live);
+    }
+  });
+}
+
+function liveText(detail) {
+  if (!detail) return "";
+  if (detail.version) return `v${detail.version}`;
+  if (detail.total !== undefined && detail.ready !== undefined) return `就绪 ${detail.ready}/${detail.total}`;
+  if (detail.total !== undefined) return `共 ${detail.total} 个`;
+  if (detail.name) return detail.name;
+  if (detail.note) return "";
+  return "";
 }
 
 /* ---------------------------------------------------------------- 页签 */
@@ -373,12 +468,24 @@ function drawEdges() {
     const mx = .125 * x1 + .375 * c1 + .375 * c2 + .125 * x2, my = (y1 + y2) / 2;
     const on = focus && (e.from_node === focus || e.to_node === focus);
     const off = focus && !on;
+
+    /* 集群模式：任一端异常 → 概念连线转琥珀加粗；一端未检测到 → 置灰 */
+    let stroke = rgba(col, on ? .95 : (off ? .2 : .44));
+    let width = on ? 1.6 : 1;
+    if (isCluster() && S.cluster) {
+      const ca = S.cluster[e.from_node], cb = S.cluster[e.to_node];
+      if ((ca && ca.state === "unhealthy") || (cb && cb.state === "unhealthy")) {
+        stroke = "rgba(245,158,11,.92)"; width = on ? 2 : 1.4;
+      } else if ((ca && ca.state === "not_detected") || (cb && cb.state === "not_detected")) {
+        stroke = "rgba(120,140,165,.26)";
+      }
+    }
     if (!S.links) return;
     const p = document.createElementNS(NS, "path");
     p.setAttribute("d", `M${x1} ${y1} C${c1} ${y1} ${c2} ${y2} ${x2} ${y2}`);
     p.setAttribute("fill", "none");
-    p.setAttribute("stroke", rgba(col, on ? .95 : (off ? .2 : .44)));
-    p.setAttribute("stroke-width", on ? 1.6 : 1);
+    p.setAttribute("stroke", stroke);
+    p.setAttribute("stroke-width", width);
     if (S.anim) { p.setAttribute("stroke-dasharray", "5 7"); p.style.animation = "flow 1.1s linear infinite"; }
     svg.appendChild(p);
     [[x1, y1], [x2, y2]].forEach(([cx, cy]) => {
@@ -488,6 +595,34 @@ async function renderInspector(id) {
     return box;
   }));
 
+  /* 集群实况卡片：只在集群数据源下出现 */
+  if (isCluster()) {
+    const c = S.cluster && S.cluster[id];
+    el.appendChild(card("集群实况", () => {
+      const box = document.createElement("div");
+      if (!c) {
+        box.innerHTML = '<div class="hint">该组件没有对应的集群探测路径。</div>';
+        return box;
+      }
+      const st = document.createElement("div"); st.className = "kv";
+      const sk = document.createElement("span"); sk.className = "k"; sk.textContent = "状态";
+      const sv = document.createElement("span"); sv.className = "v";
+      const STATE_LB = { present: "在位", unhealthy: "异常", not_detected: "未检测到", unknown: "采集不到" };
+      sv.textContent = STATE_LB[c.state] || c.state;
+      sv.style.color = c.state === "unhealthy" ? "#FCD34D" : (c.state === "present" ? "#6EE7B7" : "#8A93A3");
+      st.append(sk, sv); box.appendChild(st);
+
+      const rows = liveRows(c.detail);
+      rows.forEach(([k, v]) => {
+        const row = document.createElement("div"); row.className = "kv";
+        const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k;
+        const vv = document.createElement("span"); vv.className = "v"; vv.textContent = v;
+        row.append(kk, vv); box.appendChild(row);
+      });
+      return box;
+    }));
+  }
+
   el.appendChild(card("基础信息", () => {
     const box = document.createElement("div");
     [["ID", n.id], ["分组", groupTitle(n.group_id)], ["分类", layerLabel(n.layer_id)],
@@ -544,12 +679,39 @@ async function renderInspector(id) {
   } catch { /* 忽略：知识条目不是必须 */ }
 
   el.appendChild(card("验证命令", () => {
+    const box = document.createElement("div");
+    box.style.display = "flex"; box.style.flexDirection = "column"; box.style.gap = "7px";
+
+    /* 集群数据源：参数化命令面板（异常时定位命令置顶，写操作加「写」标记） */
+    if (isCluster()) {
+      const c = S.cluster && S.cluster[id];
+      const cmds = orderedCommands(id, c && c.state);
+      if (!cmds.length) {
+        box.innerHTML = '<div class="hint">该组件暂无预设命令。</div>';
+        return box;
+      }
+      cmds.forEach(item => {
+        const text = fillCommand(item.cmd, c && c.detail);
+        const d = document.createElement("div");
+        d.className = "cmd" + (item.isWrite ? " cmd-write" : "");
+        d.title = "点击复制" + (item.isWrite ? "（写操作命令，谨慎执行）" : "");
+        const s = document.createElement("span"); s.textContent = text;
+        const em = document.createElement("em"); em.textContent = item.isWrite ? "写 · 复制" : "复制";
+        d.append(s, em);
+        d.onclick = () => copy(text);
+        box.appendChild(d);
+      });
+      return box;
+    }
+
+    /* 知识库数据源：组件自带的验证命令 */
     const d = document.createElement("div"); d.className = "cmd";
     const s = document.createElement("span"); s.textContent = n.cmd || "（未配置）";
     const em = document.createElement("em"); em.textContent = "点击复制";
     d.append(s, em);
     d.onclick = () => copy(n.cmd || "");
-    return d;
+    box.appendChild(d);
+    return box;
   }));
 }
 const nameOf = id => { const n = nodeById(id); return n ? n.name : id; };
@@ -978,12 +1140,132 @@ async function delYaml(id) {
   catch (e) { toast("失败：" + e.message); }
 }
 async function reloadGraph() {
-  S.graph = await api("/atlas/graph");
-  S.graph.layers.forEach(l => { if (S.layerOn[l.id] === undefined) S.layerOn[l.id] = true; });
+  await loadGraph(S.source);
   buildSide(); buildLegend(); buildCanvas(); syncLayers(); applyT();
+  applyClusterStates();
   if (S.sel && nodeById(S.sel)) select(S.sel, true);
 }
 async function refreshPanel() { await renderPanel(S.ptab); }
+
+/* 切换数据源（顶栏下拉） */
+async function switchSource(next) {
+  if (next === S.source) return;
+  S.source = next;
+  $("srcSel").value = next;
+  if (next === "cluster") {
+    const okc = await loadCluster();
+    if (!okc) { buildCanvas(); applyClusterStates(); return; }
+  } else {
+    S.cluster = null; S.clusterMeta = null; renderClusterChip();
+  }
+  await loadGraph(next);
+  buildSide(); buildLegend(); buildCanvas(); syncLayers(); applyT();
+  applyClusterStates();
+  const label = { kb: "知识库（我的数据）", official: "官方全景（出厂数据）", cluster: "集群实况" }[next];
+  $("status").textContent = `数据源已切换：${label} · 滚轮缩放 · 双击放大 · 点击查看详情`;
+  $("status").classList.add("act");
+  if (S.sel && nodeById(S.sel)) select(S.sel, true);
+}
+
+/* 集群实况明细 → 右栏键值行 */
+function liveRows(detail) {
+  if (!detail) return [];
+  const rows = [];
+  const push = (k, v) => { if (v !== undefined && v !== null && v !== "") rows.push([k, String(v)]); };
+  if (detail.version) push("版本", "v" + detail.version);
+  if (detail.total !== undefined) push("总数", detail.total);
+  if (detail.ready !== undefined) push("就绪", detail.ready);
+  if (detail.not_ready !== undefined) push("未就绪", detail.not_ready);
+  if (detail.desired !== undefined) push("期望副本", detail.desired);
+  if (detail.bound !== undefined) push("已绑定", detail.bound);
+  if (detail.with_endpoints !== undefined) push("有后端", detail.with_endpoints);
+  if (detail.name) push("识别", detail.name);
+  if (detail.clusterIP) push("ClusterIP", detail.clusterIP);
+  if (detail.hosts && detail.hosts.length) push("域名", detail.hosts.join("、"));
+  if (detail.default && detail.default.length) push("默认", detail.default.join("、"));
+  if (detail.versions && detail.versions.length) push("版本", detail.versions.join("、"));
+  if (detail.runtimes && detail.runtimes.length) push("运行时", detail.runtimes.join("、"));
+  if (detail.by_type) push("按类型", Object.entries(detail.by_type).map(([k, v]) => `${k}×${v}`).join("、"));
+  if (detail.by_phase) push("按阶段", Object.entries(detail.by_phase).filter(([, v]) => v).map(([k, v]) => `${k}×${v}`).join("、"));
+  if (detail.psa_enforced) push("PSA", Object.entries(detail.psa_enforced).map(([k, v]) => `${k}:${v}`).join("、"));
+  if (detail.evidence && detail.evidence.length) push("依据", detail.evidence.join("、"));
+  if (detail.items && detail.items.length) {
+    push("异常项", detail.items.map(i => `${i.name}${i.reason ? "(" + i.reason + ")" : ""}`).join("、"));
+  }
+  if (detail.problems && detail.problems.length) {
+    push("问题 Pod", detail.problems.map(p => `${p.name}(${p.reason})`).join("、"));
+  }
+  if (detail.degraded && detail.degraded.length) {
+    push("副本不足", detail.degraded.map(d => `${d.namespace}/${d.name} ${d.ready}/${d.desired}`).join("、"));
+  }
+  if (detail.pending && detail.pending.length) {
+    push("未绑定", detail.pending.map(p => `${p.namespace}/${p.name}`).join("、"));
+  }
+  if (detail.note) push("说明", detail.note);
+  if (detail.error) push("错误", detail.error);
+  return rows.slice(0, 8);
+}
+
+/* 组件 → 常用命令（参数化：把集群实况里的真实名字填进模板；异常时定位命令置顶） */
+const CMD_TABLE = {
+  apiserver:    [["kubectl cluster-info", 0], ["kubectl get --raw /healthz", 0], ["kubectl version", 0]],
+  etcd:         [["kubectl -n kube-system get pods -l component=etcd", 0], ["ETCDCTL_API=3 etcdctl endpoint health", 1]],
+  scheduler:    [["kubectl -n kube-system logs deploy/kube-scheduler --tail=100", 0]],
+  kcm:          [["kubectl -n kube-system logs deploy/kube-controller-manager --tail=100", 0]],
+  coredns:      [["kubectl -n kube-system get svc kube-dns", 0], ["kubectl -n kube-system logs deploy/coredns --tail=50", 0]],
+  node:         [["kubectl get nodes -o wide", 0], ["kubectl describe node {name}", 0], ["kubectl top nodes", 0]],
+  kubelet:      [["journalctl -u kubelet -n 100 --no-pager", 1], ["systemctl status kubelet", 0]],
+  runtime:      [["crictl ps -a", 0], ["crictl info", 0]],
+  "kube-proxy": [["kubectl -n kube-system logs ds/kube-proxy --tail=50", 0], ["iptables -t nat -L -n | head -30", 1]],
+  cni:          [["kubectl -n kube-system get ds", 0], ["cilium status", 0]],
+  service:      [["kubectl get svc -A -o wide", 0], ["kubectl describe svc {name}", 0]],
+  endpointslice:[["kubectl get endpointslice -A", 0], ["kubectl describe endpointslice {name}", 0]],
+  netpol:       [["kubectl get networkpolicy -A", 0], ["kubectl describe networkpolicy {name}", 0]],
+  pod:          [["kubectl get pods -A -o wide", 0], ["kubectl describe pod {name}", 0],
+                 ["kubectl logs {name} --tail=100", 0], ["kubectl top pods", 0]],
+  deployment:   [["kubectl get deploy -A", 0], ["kubectl describe deploy {name}", 0], ["kubectl rollout status deploy/{name}", 0]],
+  statefulset:  [["kubectl get sts -A", 0], ["kubectl describe sts {name}", 0]],
+  daemonset:    [["kubectl get ds -A", 0], ["kubectl describe ds {name}", 0]],
+  job:          [["kubectl get jobs -A", 0], ["kubectl logs job/{name} --tail=50", 0]],
+  hpa:          [["kubectl get hpa -A", 0], ["kubectl describe hpa {name}", 0]],
+  pvc:          [["kubectl get pvc -A", 0], ["kubectl describe pvc {name}", 0]],
+  pv:           [["kubectl get pv", 0], ["kubectl describe pv {name}", 0]],
+  storageclass: [["kubectl get sc", 0], ["kubectl describe sc {name}", 0]],
+  csidriver:    [["kubectl get csidrivers", 0]],
+  rbac:         [["kubectl get clusterrole,clusterrolebinding", 0], ["kubectl auth can-i --list", 0]],
+  sa:           [["kubectl get sa -A", 0]],
+  secret:       [["kubectl get secret -A", 0]],
+  psa:          [["kubectl get ns -L pod-security.kubernetes.io/enforce", 0]],
+  ingress:      [["kubectl get ingress -A", 0], ["kubectl describe ingress {name}", 0]],
+  gateway:      [["kubectl get gateway -A", 0], ["kubectl describe gateway {name}", 0]],
+  httproute:    [["kubectl get httproute -A", 0], ["kubectl describe httproute {name}", 0]],
+  metricsserver: [["kubectl top nodes", 0], ["kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes", 0]],
+  logs:         [["kubectl -n logging get ds", 0], ["kubectl -n logging logs ds/fluent-bit --tail=50", 0]],
+  prometheus:   [["curl -s localhost:9090/api/v1/targets | jq .", 0]],
+  admission:    [["kubectl get validatingwebhookconfiguration,mutatingwebhookconfiguration", 0]],
+};
+
+/* 异常时把最能定位问题的命令顶到最前 */
+function orderedCommands(cid, cstate) {
+  const base = (CMD_TABLE[cid] || [["kubectl get all -A", 0]]).map(([cmd, isWrite]) => ({ cmd, isWrite }));
+  if (cstate !== "unhealthy") return base;
+  const top = base.filter(x => /describe|logs|journalctl|status|rollout/.test(x.cmd));
+  const rest = base.filter(x => !top.includes(x));
+  return [...top, ...rest];
+}
+
+/* 把集群实况里的真实对象名填进命令模板 */
+function fillCommand(cmd, detail) {
+  let name = "";
+  if (detail) {
+    if (detail.items && detail.items[0]) name = detail.items[0].name;
+    else if (detail.problems && detail.problems[0]) name = detail.problems[0].name;
+    else if (detail.degraded && detail.degraded[0]) name = detail.degraded[0].name;
+    else if (detail.pending && detail.pending[0]) name = detail.pending[0].name;
+    else if (detail.hosts && detail.hosts[0]) name = detail.hosts[0];
+  }
+  return name ? cmd.replace("{name}", name) : cmd.replace(" {name}", "");
+}
 
 /* ---------------------------------------------------------------- 杂项 */
 function copy(txt) {
@@ -1054,6 +1336,7 @@ function bindGlobal() {
     } catch (e) { toast("导出失败：" + e.message); }
   };
   $("bK").onclick = () => { $("q").focus(); $("q").select(); };
+  $("srcSel").onchange = e => switchSource(e.target.value);
   $("brand").onclick = async () => { await reloadGraph(); toast("已从服务端重新拉取数据"); };
   $("bSide").onclick = () => $("side").classList.toggle("open");
   $("bInsp").onclick = () => $("insp").classList.toggle("open");

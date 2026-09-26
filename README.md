@@ -29,6 +29,12 @@
 | 审计日志 | 所有写操作自动留痕，可通过接口查询 |
 | 导入导出 | 一键导出全库 JSON，支持 `merge` / `replace` 两种方式回灌 |
 | 登录与权限 | 会话 cookie 登录；`admin` 可写、`viewer` 只读；未登录 401、权限不足 403 |
+| 三种数据源 | 顶栏一键切换：**知识库**（我的数据）/ **官方全景**（出厂数据）/ **集群实况**（接入 K8s） |
+| 集群接入 | 只读探针采集真实集群，按全景槽位填充运行状态；异常高亮、未检测到置灰 |
+| 实况命令面板 | 右栏命令按集群实况自动参数化（填入真实对象名），异常时定位命令置顶，写操作加标记 |
+| 三种数据源 | 顶栏一键切换：**知识库**（我的数据）/ **官方全景**（出厂数据）/ **集群实况**（接入 K8s） |
+| 集群接入 | 只读探针采集真实集群，按全景槽位填充运行状态；异常高亮、未检测到置灰 |
+| 实况命令面板 | 右栏命令按集群实况自动参数化（填入真实对象名），异常时定位命令置顶，写操作加标记 |
 | 操作可追溯 | 每次写操作记录操作者（actor），审计日志支持按实体 / 操作者过滤 |
 | 数据库迁移 | Alembic 管理 schema，加字段走"生成迁移 → upgrade"，不再靠删库重建 |
 
@@ -98,6 +104,18 @@ ATLAS_ADMIN_PASSWORD="your-strong-password" python run.py
 | `ATLAS_ADMIN_PASSWORD` | 随机生成 | 首启管理员口令；**生产环境必须显式设置** |
 | `ATLAS_SECRET_KEY` | 随机生成 | 会话 cookie 签名密钥；轮转它等于让所有会话失效 |
 | `ATLAS_SESSION_TTL` | `43200`（12 小时） | 会话有效期，秒 |
+| `ATLAS_K8S_API` | 未设置 | 集群 apiserver 地址，如 `https://192.168.1.10:6443` |
+| `ATLAS_K8S_TOKEN` | 空 | ServiceAccount token（Bearer） |
+| `ATLAS_KUBECONFIG` | `~/.kube/config` | 未设 `ATLAS_K8S_API` 时从 kubeconfig 读取 |
+| `ATLAS_K8S_TIMEOUT` | `5`（秒） | 单次 API 请求超时 |
+| `ATLAS_K8S_CACHE_TTL` | `10`（秒） | 集群快照缓存时间 |
+| `ATLAS_K8S_VERIFY_TLS` | `1` | 自签证书可设 `0`（仅限内网） |
+| `ATLAS_K8S_API` | 未设置 | 集群 apiserver 地址，如 `https://192.168.1.10:6443` |
+| `ATLAS_K8S_TOKEN` | 空 | ServiceAccount token（Bearer） |
+| `ATLAS_KUBECONFIG` | `~/.kube/config` | 未设 `ATLAS_K8S_API` 时从 kubeconfig 读取 |
+| `ATLAS_K8S_TIMEOUT` | `5`（秒） | 单次 API 请求超时 |
+| `ATLAS_K8S_CACHE_TTL` | `10`（秒） | 集群快照缓存时间 |
+| `ATLAS_K8S_VERIFY_TLS` | `1` | 自签证书可设 `0`（仅限内网） |
 
 ```bash
 ATLAS_PORT=9000 python run.py              # bash
@@ -140,6 +158,8 @@ k8s-panorama/
 │   ├── test_api.py           端到端接口测试
 │   ├── reset_db.py           重建数据库（删表 → 迁移 → 灌种子）
 │   └── _gen_seed.py          从图谱数据生成种子文件
+├── backend/app/cluster/      集群接入模块（只读探针，独立子包）
+├── backend/app/cluster/      集群接入模块（只读探针，独立子包）
 ├── backend/migrations/       Alembic 迁移脚本
 ├── backend/tests/            pytest 单元测试（73 个用例）
 └── .github/workflows/ci.yml  CI：pytest + 端到端测试
@@ -181,6 +201,12 @@ k8s-panorama/
 | `yaml_snippet` | YAML 片段 |
 | `audit_log` | 审计日志 |
 
+集群状态**不落库**：只进内存 TTL 缓存（默认 10 秒），需要历史对比时再考虑独立快照表。
+知识库数据与集群数据物理分离，互不写入。
+
+集群状态**不落库**：只进内存 TTL 缓存（默认 10 秒），需要历史对比时再考虑独立快照表。
+知识库数据与集群数据物理分离，互不写入。
+
 状态流转规则：
 
 ```
@@ -213,6 +239,16 @@ draft ──publish──> review ──approve──> published
 | POST | `/api/auth/login` · `/api/auth/logout` · `GET /api/auth/me` | 登录 / 登出 / 当前用户 |
 | GET/POST/PATCH/DELETE | `/api/auth/users[/{username}]` | 用户管理（仅 admin） |
 | POST | `/api/auth/password` | 修改自己的口令 |
+| GET | `/api/cluster/status` | 集群可达性 + 全部组件实况标注（需登录） |
+| GET | `/api/cluster/components` | 组件 ID → 状态列表 |
+| GET | `/api/cluster/nodes` | Node 汇总（Ready 比例、异常原因） |
+| GET | `/api/cluster/workloads` | 工作负载汇总（期望 vs 就绪副本） |
+| GET | `/api/atlas/official` | 出厂概念图谱（来自种子数据，不受编辑影响） |
+| GET | `/api/cluster/status` | 集群可达性 + 全部组件实况标注（需登录） |
+| GET | `/api/cluster/components` | 组件 ID → 状态列表 |
+| GET | `/api/cluster/nodes` | Node 汇总（Ready 比例、异常原因） |
+| GET | `/api/cluster/workloads` | 工作负载汇总（期望 vs 就绪副本） |
+| GET | `/api/atlas/official` | 出厂概念图谱（来自种子数据，不受编辑影响） |
 
 示例：
 
@@ -256,6 +292,61 @@ pytest backend/tests -q
 
 浏览器侧的手工验收步骤见 [`tests/manual_steps.md`](tests/manual_steps.md)，其中包含
 "重启后端后数据仍在"的持久化验证。
+
+## 接入自己的 K8s 集群
+
+集群接入是**独立模块、只读**：后端只发 GET，代码里不存在写方法；未连接时其他功能零影响。
+
+### 方式一：直接指定（内网/自签证书最省事）
+
+```bash
+ATLAS_K8S_API="https://192.168.1.10:6443" \
+ATLAS_K8S_TOKEN="<ServiceAccount token>" \
+ATLAS_K8S_VERIFY_TLS=0 \
+python run.py
+```
+
+### 方式二：kubeconfig
+
+```bash
+export KUBECONFIG=~/.kube/config
+python run.py        # 未设 ATLAS_K8S_API 时自动读 kubeconfig
+```
+
+### 最小 RBAC（只读够用）
+
+```bash
+kubectl create serviceaccount atlas-ro -n kube-system
+kubectl create clusterrolebinding atlas-ro \
+  --clusterrole=view --serviceaccount=kube-system:atlas-ro
+kubectl -n kube-system create token atlas-ro     # 有效期默认 1 小时
+# 要长期有效需配 Secret 或调整 token 过期策略
+```
+
+`view` 这个内置 ClusterRole 已覆盖本项目用到的全部只读路径
+（nodes/pods/services/endpointslices/deployments/networkpolicies/storageclasses 等）。
+
+### 没有集群？先用模拟器练手
+
+```bash
+python scripts/mock_k8s.py --port 18081          # 另开一个终端
+ATLAS_K8S_API="http://127.0.0.1:18081" python run.py
+```
+
+`mock_k8s.py` 会返回真实结构的 K8s JSON，并刻意制造一个 NotReady 节点、一个 Pending Pod、
+一个 CrashLoopBackOff 容器，Gateway API 返回 404 —— 用来验证异常高亮与降级链路。
+
+### 连接后能看到什么
+
+顶栏把数据源切到「集群实况」：
+
+- 全景槽位按四态填充：**在位**（分类色）/ **异常**（琥珀色脉冲）/ **未检测到**（置灰虚线）/ **采集不到**（半透明）
+- 概念连线任一端异常 → 转琥珀加粗，直接看出哪条链路出问题
+- 右栏「集群实况」卡片显示汇总（如 Node `就绪 1/2`、Pod `Pending×1`）
+- 右栏「常用命令」已填入真实对象名，如 `kubectl describe node node-2`，点击即复制
+- 顶栏徽标显示 `集群已连接 · N 项异常`
+
+集群不可达时返回 503 并自动降级为知识库视图，其余功能不受影响。
 
 ## 部署
 

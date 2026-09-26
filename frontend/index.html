@@ -20,6 +20,15 @@
     <div class="tools">
       <span class="hint" id="writeHint" hidden
             style="font-size:11px;color:#6C839E;letter-spacing:.02em"></span>
+      <label class="srcsel" id="srcWrap" title="选择数据来源">
+        <span class="srcsel-lb">数据源</span>
+        <select id="srcSel">
+          <option value="kb">知识库（我的数据）</option>
+          <option value="official">官方全景（出厂数据）</option>
+          <option value="cluster">集群实况（接入 K8s）</option>
+        </select>
+      </label>
+      <span class="chip" id="clusterChip" hidden title="集群连接状态"></span>
       <button class="btn primary" id="bNew" data-need-write>+ 新建组件</button>
       <button class="btn" id="bFit">适配</button>
       <button class="btn" id="bRead">阅读</button>

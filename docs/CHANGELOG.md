@@ -2,6 +2,124 @@
 
 ---
 
+## [1.2.0] — 2026-09-26
+
+对应路线图 M2「连得上 + 看得见」：K8s 集群只读接入 + 资源可视化 + 三种数据源切换。
+
+### 新增
+
+**M2a 集群只读探针**（`backend/app/cluster/` 独立子包）
+
+- `client.py`：白名单只读客户端，对外只有 `get()`，代码里不存在 post/put/patch/delete
+- `mapper.py`：K8s 对象 → 图谱组件 ID 的纯函数汇总（Node Ready 比例、Pod 阶段、
+  工作负载期望 vs 就绪、CNI 探测、日志 agent 探测、PSA 级别…）
+- `cache.py`：TTL 内存缓存 + 同 key 并发去重；另有「上一次成功快照」供降级时使用
+- `snapshot.py`：并发采集 24 条 API 路径；单条失败只影响对应组件，
+  **全部失败**才判定集群不可达
+- 路由挂在 `/api/cluster/*`，与 `/api/atlas/*` 物理分离（互不 import）
+- 不可达 → 503 + `{"degraded": true, "reason": ...}`；有上次快照则返回并标 `stale`
+- 凭证：`ATLAS_K8S_API` + `ATLAS_K8S_TOKEN`，或读 kubeconfig；Pod 内可走 ServiceAccount
+
+**M2b 资源可视化 + 三数据源**
+
+- 顶栏数据源切换：**知识库**（`/api/atlas/graph`）/ **官方全景**（`/api/atlas/official`，
+  来自种子数据不受编辑影响）/ **集群实况**
+- 集群视图**复用全景图槽位坐标**（布局是心智锚点），按四态填充：
+  在位 / 异常（琥珀脉冲）/ 未检测到（置灰虚线）/ 采集不到（半透明）
+- 概念连线 + 集群状态联动：任一端异常 → 转琥珀加粗
+- 右栏「集群实况」卡片 + 「常用命令」面板：命令按实况**参数化**（填入真实对象名），
+  异常时 describe/logs 类定位命令置顶，写操作命令加「写」标记
+- 顶栏集群徽标：已连接 / N 项异常 / 未连接
+
+**配套**
+
+- `scripts/mock_k8s.py`：模拟 kube-apiserver，返回真实结构 JSON，
+  刻意制造 NotReady 节点、Pending Pod、CrashLoopBackOff、Gateway API 404
+- README 新增「接入自己的 K8s 集群」：两种凭证方式、最小 RBAC、无集群时用模拟器
+
+### 验收证据
+
+| 测试 | 结果 |
+|---|---|
+| `pytest backend/tests` | **99 passed / 0 failed**（新增 26 个集群用例） |
+| `scripts/test_api.py` | **51 PASS / 0 FAIL** |
+| 前端三数据源 + 集群视图注入测试 | **25 PASS / 0 FAIL** |
+
+集群用例覆盖：mapper 纯函数、client 只读边界（无写方法、404 → ResourceNotFound、
+不可达 → ClusterUnreachable）、快照四态、单组件失败不扩散、路由 503 降级、
+stale 快照、以及「集群接口不写任何 atlas 数据」。
+
+### 开发中修掉的问题
+
+| 问题 | 根因 |
+|---|---|
+| 集群完全不可达时接口返回 200 而非 503 | `collect()` 把单条路径失败吞成 error 字段，整体不可达也不抛异常；改为「全部路径失败才抛 ClusterUnreachable」 |
+| `from .cluster import router` 拿到子模块而非 APIRouter | 包内模块名与实例名冲突；改 `from .cluster.router import router` |
+| `summarize_ingresses` 崩溃 | 集合推导里放的是 rule dict 而非 host 字符串（unhashable type: dict） |
+| 对外状态出现 `not_found` | 内部状态与约定四态不一致；`_c()` 里统一归一成 `not_detected` |
+| 旧服务未重启导致验证结论偏差 | 改完 `_c()` 后忘记重启，前端看到还是旧行为 |
+
+---
+
+## [1.2.0] — 2026-09-26
+
+对应路线图 M2「连得上 + 看得见」：K8s 集群只读接入 + 资源可视化 + 三种数据源切换。
+
+### 新增
+
+**M2a 集群只读探针**（`backend/app/cluster/` 独立子包）
+
+- `client.py`：白名单只读客户端，对外只有 `get()`，代码里不存在 post/put/patch/delete
+- `mapper.py`：K8s 对象 → 图谱组件 ID 的纯函数汇总（Node Ready 比例、Pod 阶段、
+  工作负载期望 vs 就绪、CNI 探测、日志 agent 探测、PSA 级别…）
+- `cache.py`：TTL 内存缓存 + 同 key 并发去重；另有「上一次成功快照」供降级时使用
+- `snapshot.py`：并发采集 24 条 API 路径；单条失败只影响对应组件，
+  **全部失败**才判定集群不可达
+- 路由挂在 `/api/cluster/*`，与 `/api/atlas/*` 物理分离（互不 import）
+- 不可达 → 503 + `{"degraded": true, "reason": ...}`；有上次快照则返回并标 `stale`
+- 凭证：`ATLAS_K8S_API` + `ATLAS_K8S_TOKEN`，或读 kubeconfig；Pod 内可走 ServiceAccount
+
+**M2b 资源可视化 + 三数据源**
+
+- 顶栏数据源切换：**知识库**（`/api/atlas/graph`）/ **官方全景**（`/api/atlas/official`，
+  来自种子数据不受编辑影响）/ **集群实况**
+- 集群视图**复用全景图槽位坐标**（布局是心智锚点），按四态填充：
+  在位 / 异常（琥珀脉冲）/ 未检测到（置灰虚线）/ 采集不到（半透明）
+- 概念连线 + 集群状态联动：任一端异常 → 转琥珀加粗
+- 右栏「集群实况」卡片 + 「常用命令」面板：命令按实况**参数化**（填入真实对象名），
+  异常时 describe/logs 类定位命令置顶，写操作命令加「写」标记
+- 顶栏集群徽标：已连接 / N 项异常 / 未连接
+
+**配套**
+
+- `scripts/mock_k8s.py`：模拟 kube-apiserver，返回真实结构 JSON，
+  刻意制造 NotReady 节点、Pending Pod、CrashLoopBackOff、Gateway API 404
+- README 新增「接入自己的 K8s 集群」：两种凭证方式、最小 RBAC、无集群时用模拟器
+
+### 验收证据
+
+| 测试 | 结果 |
+|---|---|
+| `pytest backend/tests` | **99 passed / 0 failed**（新增 26 个集群用例） |
+| `scripts/test_api.py` | **51 PASS / 0 FAIL** |
+| 前端三数据源 + 集群视图注入测试 | **25 PASS / 0 FAIL** |
+
+集群用例覆盖：mapper 纯函数、client 只读边界（无写方法、404 → ResourceNotFound、
+不可达 → ClusterUnreachable）、快照四态、单组件失败不扩散、路由 503 降级、
+stale 快照、以及「集群接口不写任何 atlas 数据」。
+
+### 开发中修掉的问题
+
+| 问题 | 根因 |
+|---|---|
+| 集群完全不可达时接口返回 200 而非 503 | `collect()` 把单条路径失败吞成 error 字段，整体不可达也不抛异常；改为「全部路径失败才抛 ClusterUnreachable」 |
+| `from .cluster import router` 拿到子模块而非 APIRouter | 包内模块名与实例名冲突；改 `from .cluster.router import router` |
+| `summarize_ingresses` 崩溃 | 集合推导里放的是 rule dict 而非 host 字符串（unhashable type: dict） |
+| 对外状态出现 `not_found` | 内部状态与约定四态不一致；`_c()` 里统一归一成 `not_detected` |
+| 旧服务未重启导致验证结论偏差 | 改完 `_c()` 后忘记重启，前端看到还是旧行为 |
+
+---
+
 ## [1.1.0] — 2026-09-26
 
 对应路线图 M1「可信」：鉴权与权限、CI 与单元测试、数据库迁移。**纯增量，未改动既有业务逻辑。**
